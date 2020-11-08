@@ -1,0 +1,18 @@
+[package]
+name = "vredditor-api"
+version = "0.1.0"
+authors = ["Billy J Rhoades II <me@brod.es>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+websocket = "0.24.0"
+
+log = "0.4"
+env_logger = "0.8"
+failure = "0.1.8"
+
+tokio = { version = "0.3.3", default-features = false, features = ["rt-multi-thread", "macros"] }
+tokio-tungstenite = { version = "0.12" }
+futures-util = { version = "0.3", default-features = false, features = ["async-await", "sink", "std"] }
