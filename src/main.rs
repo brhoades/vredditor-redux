@@ -206,7 +206,7 @@ where
                 let job = eq.enqueue_url(url).await?;
                 debug!("{} -> job created, url enqueued: {:?}", addr, job);
 
-                tx.send(Message::Text("enqueued url for processing".to_string()))
+                tx.send(Message::Text("QUEUED".to_string()))
                     .await
                     .map(|_| StreamState::Job(job))
             }
@@ -289,23 +289,22 @@ impl JobEnqueuer {
 }
 
 async fn process_job(job: Job) {
-    use JobState::*;
-
     let mut state = job.state.lock().await;
     match &*state {
-        Queued => (),
+        JobState::Queued => (),
         // TODO: log
         v => {
             error!("process job got job with state {:?}", v);
             return;
         }
     }
-    *state = Processing;
+    *state = JobState::Processing;
     std::mem::drop(state); // allow ws access
 }
 
 #[tokio::test]
 async fn test_client() -> Result<()> {
+    use tokio::select;
     let addr = "localhost:50023".to_owned();
 
     // we cancel by returning an error from any ne of these
@@ -322,7 +321,7 @@ async fn test_client() -> Result<()> {
 #[cfg(test)]
 async fn run_test_client(addr: String) -> Result<()> {
     use std::time::Duration;
-    use tokio::{select, time::sleep};
+    use tokio::time::sleep;
     use websocket_lite::Message;
 
     let mut tries: i8 = 0;
@@ -349,20 +348,65 @@ async fn run_test_client(addr: String) -> Result<()> {
             }
         };
 
-        stream
-            .send(Message::text(StreamState::Handshake))
-            .await
-            .map_err(|e| format_err!("failed to send stream message from client: {}", e))?;
+        assert_eq!(
+            "READY",
+            send_and_get(&mut stream, Message::text(StreamState::Handshake)).await?
+        );
 
-        let resp: Message = stream
-            .next()
-            .await
-            .ok_or_else(|| format_err!("no message received from server in response to handshake"))?
-            .map_err(|e| format_err!("error from server in response to handshake: {}", e))?;
+        assert_eq!(
+            "QUEUED",
+            send_and_get(
+                &mut stream,
+                Message::text(StreamState::Url(Url::parse("https://google.com")?))
+            )
+            .await?
+        );
 
-        assert_eq!(Some("READY"), resp.as_text());
         break;
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+async fn send_and_get<T>(stream: &mut T, msg: websocket_lite::Message) -> Result<String>
+where
+    T: futures::Sink<websocket_lite::Message>
+        + futures::Stream<Item = std::result::Result<websocket_lite::Message, websocket_lite::Error>>
+        + Unpin,
+    <T as futures::Sink<websocket_lite::Message>>::Error: std::fmt::Display,
+{
+    let msg_text = msg.as_text().unwrap();
+
+    stream
+        .send(msg.clone())
+        .await
+        .map_err(|e| format_err!("failed to send message \"{}\" from client: {}", msg_text, e))?;
+
+    stream
+        .next()
+        .await
+        .ok_or_else(|| {
+            format_err!(
+                "no message received from server in response to: \"{}\"",
+                msg_text
+            )
+        })?
+        .map_err(|e| {
+            format_err!(
+                "error from server in response to message \"{}\": {}",
+                msg_text,
+                e
+            )
+        })
+        .and_then(|v| {
+            v.as_text()
+                .ok_or_else(|| {
+                    format_err!(
+                        "no message received from server in response to message: {}",
+                        msg_text
+                    )
+                })
+                .map(str::to_string)
+        })
 }
