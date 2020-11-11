@@ -14,20 +14,26 @@ use tokio::{
 };
 use tokio_tungstenite::tungstenite::protocol::Message;
 
+type Result<T> = std::result::Result<T, Error>;
+
 #[tokio::main]
-async fn main() -> Result<(), Error> {
-    let _ = env_logger::try_init();
+async fn main() -> Result<()> {
     let addr = env::args()
         .nth(1)
         .unwrap_or_else(|| "0.0.0.0:8080".to_string());
-    let mut q = JobQueue::new();
-    let mut enqueuer = q.enqueuer();
+    run_server(addr).await
+}
+
+async fn run_server(addr: String) -> Result<()> {
+    let _ = env_logger::try_init();
+    let q = JobQueue::new();
+    let enqueuer = q.enqueuer();
 
     try_join!(q.run(), tcp_listener_loop(enqueuer, addr))?;
     Ok(())
 }
 
-async fn tcp_listener_loop(eq: JobEnqueuer, addr: String) -> Result<(), Error> {
+async fn tcp_listener_loop(eq: JobEnqueuer, addr: String) -> Result<()> {
     // Create the event loop and TCP listener we'll accept connections on.
     let listener = TcpListener::bind(&addr).await?;
     info!("Listening on: {}", addr);
@@ -48,22 +54,28 @@ enum StreamState {
     Invalid(String),
 }
 
-impl StreamState {
-    pub fn to_string(&self) -> String {
-        use StreamState::*;
+impl Into<String> for StreamState {
+    fn into(self) -> String {
         match self {
-            New => "NEW".to_string(),
-            Handshake => "HANDSHAKE".to_string(),
-            Url(v) => "URL v".to_string(),
-            Job(_job) => "JOB".to_string(),
-            Invalid(v) => format!("Unknown command: {}", v),
+            StreamState::New => "NEW".to_string(),
+            StreamState::Handshake => "HANDSHAKE".to_string(),
+            StreamState::Url(v) => format!("URL {}", v),
+            StreamState::Job(_job) => "JOB".to_string(),
+            StreamState::Invalid(v) => format!("Unknown command: {}", v),
         }
     }
 }
 
 impl std::fmt::Display for StreamState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.to_string())
+        let string = match self {
+            StreamState::New => "NEW".to_string(),
+            StreamState::Handshake => "HANDSHAKE".to_string(),
+            StreamState::Url(v) => format!("URL {}", v),
+            StreamState::Job(_job) => "JOB".to_string(),
+            StreamState::Invalid(v) => format!("Unknown command: {}", v),
+        };
+        write!(f, "{}", string)
     }
 }
 
@@ -97,7 +109,7 @@ pub enum JobState {
     Queued,
     Processing,
     Uploading,
-    Complete(Result<url::Url, Error>),
+    Complete(Result<url::Url>),
     Cancelled,
 }
 
@@ -113,13 +125,13 @@ pub struct Job {
     pub url: Url,
 }
 
-async fn accept_connection(mut eq: JobEnqueuer, stream: TcpStream) -> Result<(), Error> {
+async fn accept_connection(mut eq: JobEnqueuer, stream: TcpStream) -> Result<()> {
     let addr = stream
         .peer_addr()
         .map_err(|e| format_err!("connected streams should have a peer address: {}", e))?;
     info!("Peer address: {}", addr);
 
-    let mut stream = tokio_tungstenite::accept_async(stream)
+    let stream = tokio_tungstenite::accept_async(stream)
         .await
         .map_err(|e| format_err!("error during handshake: {}", e))?;
     let (mut tx, mut rx) = stream.split();
@@ -166,7 +178,7 @@ async fn handle_message<T>(
     eq: &mut JobEnqueuer,
     addr: &SocketAddr,
     msg: String,
-) -> Result<StreamState, Error>
+) -> Result<StreamState>
 where
     T: futures::Sink<Message> + std::marker::Unpin,
     <T as futures::Sink<Message>>::Error: std::error::Error + Sync + Send + failure::Fail + 'static,
@@ -177,13 +189,13 @@ where
             Ok(state.clone())
         }
         StreamState::Handshake => match state {
-            New => tx
-                .send(Message::Text(format!("READY")))
+            StreamState::New => tx
+                .send(Message::Text("READY".to_string()))
                 .await
                 .map(|_| StreamState::Handshake),
             other => {
                 debug!("{} -> unexpected handshake from state {}", addr, other);
-                tx.send(Message::Text(format!("cannot handshake at this time")))
+                tx.send(Message::Text("cannot handshake at this time".to_string()))
                     .await
                     .map(|_| state.clone())
             }
@@ -194,7 +206,7 @@ where
                 let job = eq.enqueue_url(url).await?;
                 debug!("{} -> job created, url enqueued: {:?}", addr, job);
 
-                tx.send(Message::Text(format!("enqueued url for processing")))
+                tx.send(Message::Text("enqueued url for processing".to_string()))
                     .await
                     .map(|_| StreamState::Job(job))
             }
@@ -203,7 +215,7 @@ where
                     "{} -> tried to provide url at state {} (url: {})",
                     addr, other, other,
                 );
-                tx.send(Message::Text(format!("cannot process url at this time")))
+                tx.send(Message::Text("cannot process url at this time".to_string()))
                     .await
                     .map(|_| state.clone())
             }
@@ -237,7 +249,7 @@ impl JobQueue {
         }
     }
 
-    pub async fn run(self) -> Result<(), Error> {
+    pub async fn run(self) -> Result<()> {
         let mut stream = self.rx.map(process_job);
 
         while let Some(res) = stream.next().await {
@@ -254,7 +266,8 @@ struct JobEnqueuer {
 }
 
 impl JobEnqueuer {
-    pub async fn enqueue<T: AsRef<str>>(&mut self, url: T) -> Result<Job, Error> {
+    #[allow(dead_code)]
+    pub async fn enqueue<T: AsRef<str>>(&mut self, url: T) -> Result<Job> {
         let j = Job {
             url: Url::parse(url.as_ref())?,
             state: Arc::new(Mutex::new(JobState::default())),
@@ -264,13 +277,13 @@ impl JobEnqueuer {
         Ok(j)
     }
 
-    pub async fn enqueue_url(&mut self, url: Url) -> Result<Job, Error> {
+    pub async fn enqueue_url(&mut self, url: Url) -> Result<Job> {
         let j = Job {
             url,
             state: Arc::new(Mutex::new(JobState::default())),
         };
 
-        self.tx.send(j.clone()).await;
+        self.tx.send(j.clone()).await?;
         Ok(j)
     }
 }
@@ -289,4 +302,67 @@ async fn process_job(job: Job) {
     }
     *state = Processing;
     std::mem::drop(state); // allow ws access
+}
+
+#[tokio::test]
+async fn test_client() -> Result<()> {
+    let addr = "localhost:50023".to_owned();
+
+    // we cancel by returning an error from any ne of these
+    select! {
+        res = run_server(addr.clone()) => {
+            return res;
+        },
+        res = run_test_client(addr) => {
+            return res;
+        },
+    }
+}
+
+#[cfg(test)]
+async fn run_test_client(addr: String) -> Result<()> {
+    use std::time::Duration;
+    use tokio::{select, time::sleep};
+    use websocket_lite::Message;
+
+    let mut tries: i8 = 0;
+
+    // just keeping this in a loop so I don't have to type the return value of ClientBuilder.
+    while tries < 5 {
+        // wait for the server to come up.
+        sleep(Duration::from_millis(50)).await;
+
+        let url = format!("ws://{}", addr);
+        let stream = websocket_lite::ClientBuilder::new(&url)?
+            .async_connect()
+            .await
+            .map_err(|e| format_err!("failed to connect to ws server @ {}: {}", addr, e));
+        let mut stream = match stream {
+            Ok(s) => s,
+            Err(e) => {
+                if tries >= 4 {
+                    return Err(e);
+                } else {
+                    tries += 1;
+                    continue;
+                }
+            }
+        };
+
+        stream
+            .send(Message::text(StreamState::Handshake))
+            .await
+            .map_err(|e| format_err!("failed to send stream message from client: {}", e))?;
+
+        let resp: Message = stream
+            .next()
+            .await
+            .ok_or_else(|| format_err!("no message received from server in response to handshake"))?
+            .map_err(|e| format_err!("error from server in response to handshake: {}", e))?;
+
+        assert_eq!(Some("READY"), resp.as_text());
+        break;
+    }
+
+    Ok(())
 }
