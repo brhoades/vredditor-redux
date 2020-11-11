@@ -9,6 +9,7 @@ use url::Url;
 use futures_util::{SinkExt, StreamExt};
 use tokio::{
     net::{TcpListener, TcpStream},
+    process::Command,
     sync::{mpsc, Mutex},
     try_join,
 };
@@ -124,12 +125,12 @@ impl std::fmt::Display for StreamState {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum JobState {
     Queued,
     Processing,
     Uploading,
-    Complete(Result<url::Url>),
+    Complete(std::result::Result<url::Url, String>),
     Cancelled,
 }
 
@@ -168,6 +169,34 @@ impl std::fmt::Display for JobState {
 pub struct Job {
     pub state: Arc<Mutex<JobState>>,
     pub url: Url,
+}
+
+impl Job {
+    // Atomically sets the state if the expected state is there and returns if it was successful.
+    async fn set_state_if_eq(&mut self, new: JobState, expected: Option<JobState>) -> bool {
+        let mut state = self.state.lock().await;
+        match (&mut *state, expected) {
+            (state, Some(expected)) => {
+                if *state == expected {
+                    *state = new;
+                    true
+                } else {
+                    error!(
+                        "process_job called with job in bad state {:?} (expected {})",
+                        state, expected
+                    );
+                    *state = JobState::Complete(Err(
+                        "internal server error (state mismatch)".to_owned()
+                    ));
+                    false
+                }
+            }
+            (state, None) => {
+                *state = new;
+                true
+            }
+        }
+    }
 }
 
 async fn accept_connection(mut eq: JobEnqueuer, stream: TcpStream) -> Result<()> {
@@ -342,18 +371,72 @@ impl JobEnqueuer {
     }
 }
 
-async fn process_job(job: Job) {
-    let mut state = job.state.lock().await;
-    match &*state {
-        JobState::Queued => (),
-        // TODO: log
-        v => {
-            error!("process job got job with state {:?}", v);
-            return;
+async fn process_job(mut job: Job) {
+    if !job
+        .set_state_if_eq(JobState::Processing, Some(JobState::Queued))
+        .await
+    {
+        error!("process_job called with job in bad state: {:?}", job);
+    }
+
+    let url = &job.url;
+    match youtube_dl_download(url.to_string()).await {
+        Ok(bytes) => {
+            info!("downloaded {} bytes", bytes.len());
+            job.set_state_if_eq(JobState::Uploading, Some(JobState::Processing))
+                .await;
+        }
+        Err(e) => {
+            warn!("error processing job {:?} for {}: {}", job, url, e);
+            job.set_state_if_eq(
+                JobState::Complete(Err(e.to_string())),
+                Some(JobState::Processing),
+            )
+            .await;
         }
     }
-    *state = JobState::Processing;
-    std::mem::drop(state); // allow ws access
+}
+
+fn youtube_dl<'a, S, I: IntoIterator<Item = S>>(url: S, extra_args: Option<I>) -> Box<Command>
+where
+    S: AsRef<std::ffi::OsStr>,
+{
+    let mut cmd = Box::new(Command::new("youtube-dl"));
+    cmd.arg(format!("-f bestvideo+bestaudio"));
+
+    match extra_args {
+        Some(a) => {
+            cmd.args(a);
+            ()
+        }
+        None => (),
+    };
+
+    cmd.arg(url);
+    cmd
+}
+
+async fn youtube_dl_download<S: AsRef<std::ffi::OsStr>>(url: S) -> Result<Vec<u8>> {
+    youtube_dl(url, Option::<Vec<S>>::None)
+        .output()
+        .await
+        .map_err(|e| format_err!("failed to get youtube-dl output: {}", e))
+        .and_then(|output| {
+            if !output.status.success() {
+                match std::str::from_utf8(&output.stderr) {
+                    Ok(stderr) => Err(format_err!(
+                        "non-zero exit status from youtube-dl download:\n{}",
+                        stderr
+                    )),
+                    Err(e) => Err(format_err!(
+                        "youtube-dl failed and failed to get stderr from it: {}",
+                        e
+                    )),
+                }
+            } else {
+                Ok(output.stdout)
+            }
+        })
 }
 
 #[tokio::test]
@@ -411,13 +494,39 @@ async fn run_test_client(addr: String) -> Result<()> {
             "QUEUED",
             send_and_get(
                 &mut stream,
-                Message::text(StreamMessage::Url(Url::parse("https://google.com")?))
+                Message::text(StreamMessage::Url(Url::parse(
+                    "https://www.youtube.com/watch?v=668nUCeBHyY"
+                )?))
             )
             .await?
         );
 
-        let res = send_and_get(&mut stream, Message::text(StreamMessage::Status)).await?;
-        assert!(res.starts_with("STATUS "), res);
+        let mut int = tokio::time::interval(Duration::from_millis(100));
+        let mut times: i8 = 0;
+        while let _ = int.next().await {
+            times += 1;
+            if times >= 20 {
+                break;
+            }
+
+            let res = send_and_get(&mut stream, Message::text(StreamMessage::Status)).await?;
+            if res.starts_with("STATUS ") {
+                debug!("status: \"{}\"", res);
+                let res = res.trim_start_matches("STATUS ");
+
+                if res.starts_with("PROCESSING") {
+                    debug!("PROCESSING");
+                } else if res.starts_with("UPLOADING") {
+                    debug!("UPLOADING");
+                    break;
+                } else {
+                    assert!(false, "unknown state: {}", res);
+                }
+            } else {
+                assert_eq!("COMPLETE", res);
+                debug!("COMPLETE: \"{}\"", res);
+            }
+        }
 
         break;
     }
