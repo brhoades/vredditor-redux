@@ -1,9 +1,19 @@
-use failure::{format_err, Error};
 use std::env;
+use std::sync::Arc;
 
-use futures_util::StreamExt;
-use log::info;
-use tokio::net::{TcpListener, TcpStream};
+use failure::{format_err, Error};
+use log::{debug, error, info};
+use url::Url;
+
+use futures::{
+    channel::mpsc::{channel, Receiver, Sender},
+    StreamExt,
+};
+
+use tokio::{
+    net::{TcpListener, TcpStream},
+    sync::Mutex,
+};
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
@@ -40,4 +50,69 @@ async fn accept_connection(stream: TcpStream) -> Result<(), Error> {
     read.forward(write)
         .await
         .map_err(|e| format_err!("failed to echo: {}", e))
+}
+
+#[derive(Debug)]
+struct JobQueue {
+    rx: Receiver<Job>,
+    tx: Sender<Job>,
+}
+
+impl JobQueue {
+    pub fn new() -> Self {
+        let (tx, rx) = channel::<Job>(100);
+        JobQueue { tx, rx }
+    }
+
+    pub async fn sender(&self) -> Sender<Job> {
+        self.tx.clone()
+    }
+
+    pub async fn run(self) -> () {
+        self.rx.for_each(|job| process_job(job)).await;
+    }
+
+    fn enqueue<T: AsRef<str>>(url: T) -> Result<Job, Error> {
+        Ok(Job {
+            url: Url::parse(url.as_ref())?,
+            state: Arc::new(Mutex::new(JobState::default())),
+        })
+    }
+}
+
+async fn process_job(job: Job) {
+    use JobState::*;
+
+    let mut state = job.state.lock().await;
+    match &*state {
+        Queued => (),
+        // TODO: log
+        v => {
+            error!("process job got job with state {:?}", v);
+            return;
+        }
+    }
+    *state = Processing;
+    std::mem::drop(state); // allow ws access
+}
+
+#[derive(Debug)]
+struct Job {
+    pub state: Arc<Mutex<JobState>>,
+    pub url: Url,
+}
+
+#[derive(Debug)]
+enum JobState {
+    Queued,
+    Processing,
+    Uploading,
+    Complete(Result<url::Url, Error>),
+    Cancelled,
+}
+
+impl Default for JobState {
+    fn default() -> Self {
+        JobState::Queued
+    }
 }

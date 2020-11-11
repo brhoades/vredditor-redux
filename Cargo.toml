@@ -8,11 +8,16 @@ edition = "2018"
 
 [dependencies]
 websocket = "0.24.0"
+protobuf = { version = "2", features = ["with-bytes"] }
+url = "2.2"
+rusoto = "0.24"
+cmd_lib = "0.8"
 
 log = "0.4"
 env_logger = "0.8"
 failure = "0.1.8"
 
-tokio = { version = "0.3.3", default-features = false, features = ["rt-multi-thread", "macros"] }
+tokio = { version = "0.3.3", default-features = false, features = ["rt-multi-thread", "macros", "sync"] }
 tokio-tungstenite = { version = "0.12" }
+futures = { version = "0.3" }
 futures-util = { version = "0.3", default-features = false, features = ["async-await", "sink", "std"] }
