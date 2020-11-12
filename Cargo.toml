@@ -10,12 +10,13 @@ edition = "2018"
 # protobuf = { version = "2", features = ["with-bytes"] }
 url = "2.2"
 rusoto = "0.24"
+rand = "0.7"
 
 log = "0.4"
 env_logger = "0.8"
 failure = "0.1.8"
 
-tokio = { version = "0.3", default-features = false, features = ["rt-multi-thread", "macros", "sync", "net", "io-util", "time", "process"] }
+tokio = { version = "0.3", default-features = false, features = ["rt-multi-thread", "macros", "sync", "net", "io-util", "time", "process", "fs"] }
 tokio-tungstenite = { git = "https://github.com/snapview/tokio-tungstenite", rev = "bea9b86", features = ["connect", "stream"] }
 futures = { version = "0.3" }
 futures-util = { version = "0.3", default-features = false, features = ["async-await", "sink", "std"] }

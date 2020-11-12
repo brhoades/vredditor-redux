@@ -1101,6 +1101,7 @@ dependencies = [
  "futures",
  "futures-util",
  "log",
+ "rand 0.7.3",
  "rusoto",
  "tokio",
  "tokio-tungstenite",

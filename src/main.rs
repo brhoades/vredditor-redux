@@ -336,7 +336,7 @@ impl JobQueue {
         let mut stream = self.rx.map(process_job);
 
         while let Some(res) = stream.next().await {
-            println!("res: {:?}", res.await);
+            println!("job processed: {:?}", res.await);
         }
 
         Ok(())
@@ -382,7 +382,7 @@ async fn process_job(mut job: Job) {
     let url = &job.url;
     match youtube_dl_download(url.to_string()).await {
         Ok(bytes) => {
-            info!("downloaded {} bytes", bytes.len());
+            println!("downloaded {} bytes", bytes.len());
             job.set_state_if_eq(JobState::Uploading, Some(JobState::Processing))
                 .await;
         }
@@ -402,12 +402,11 @@ where
     S: AsRef<std::ffi::OsStr>,
 {
     let mut cmd = Box::new(Command::new("youtube-dl"));
-    cmd.arg(format!("-f bestvideo+bestaudio"));
+    cmd.args(&["--max-filesize", "50m"]);
 
     match extra_args {
         Some(a) => {
             cmd.args(a);
-            ()
         }
         None => (),
     };
@@ -416,27 +415,73 @@ where
     cmd
 }
 
-async fn youtube_dl_download<S: AsRef<std::ffi::OsStr>>(url: S) -> Result<Vec<u8>> {
-    youtube_dl(url, Option::<Vec<S>>::None)
-        .output()
+async fn youtube_dl_download<S: AsRef<std::ffi::OsStr> + Clone>(url: S) -> Result<Vec<u8>> {
+    let pathb = random_temp_file_path();
+    let path = pathb
+        .to_str()
+        .ok_or_else(|| format_err!("failed to convert pathbuf to str: {:?}", pathb))?;
+    debug!("temp file path created: {}", path);
+
+    let template = format!("{}.%(ext)s", path);
+    let filename_output = youtube_dl(url.clone(), Option::<Vec<S>>::None)
+        .args(&["-q", "--get-filename", "-o"])
+        .arg(&template)
+        .stdout(std::process::Stdio::piped())
+        .stdin(std::process::Stdio::piped())
+        .spawn()?
+        .wait_with_output()
+        .await?;
+
+    if !filename_output.status.success() {
+        warn!(
+            "failed to query file name for: {}\n{}",
+            url.as_ref().to_str().unwrap(),
+            std::str::from_utf8(&filename_output.stderr).map_err(|e| format_err!(
+                "failed to parse stderr for filename output youtubedl: {}\n{:?}",
+                e,
+                filename_output.stderr
+            ))?
+        );
+    }
+
+    let filename = std::str::from_utf8(&filename_output.stdout)?.trim();
+    info!("filename: {}", filename);
+
+    let child = youtube_dl(url, Option::<Vec<S>>::None)
+        .args(&["-q", "-o"])
+        .arg(template)
+        .stdout(std::process::Stdio::piped())
+        .stdin(std::process::Stdio::piped())
+        .spawn()?;
+
+    let output = child
+        .wait_with_output()
         .await
-        .map_err(|e| format_err!("failed to get youtube-dl output: {}", e))
-        .and_then(|output| {
-            if !output.status.success() {
-                match std::str::from_utf8(&output.stderr) {
-                    Ok(stderr) => Err(format_err!(
-                        "non-zero exit status from youtube-dl download:\n{}",
-                        stderr
-                    )),
-                    Err(e) => Err(format_err!(
-                        "youtube-dl failed and failed to get stderr from it: {}",
-                        e
-                    )),
-                }
-            } else {
-                Ok(output.stdout)
-            }
-        })
+        .map_err(|e| format_err!("failed to run youtube-dl and get output: {}", e))?;
+
+    if !output.status.success() {
+        return Err(format_err!(
+            "non-zero exit status ({}) from youtube-dl download:\n{}\n{}\n",
+            output.status,
+            std::str::from_utf8(&output.stderr)?,
+            std::str::from_utf8(&output.stdout)?,
+        ));
+    }
+
+    let res = match tokio::fs::read(&filename).await {
+        std::result::Result::Ok(v) => {
+            debug!("read {} bytes", v.len());
+            Ok(v)
+        }
+        std::result::Result::Err(e) => Err(format_err!(
+            "failed to read from youtube-dl output file \"{}\" (from {}): {}",
+            filename,
+            path,
+            e,
+        ))?,
+    };
+    std::fs::remove_file(filename).unwrap();
+    res
 }
 
 #[tokio::test]
@@ -495,7 +540,7 @@ async fn run_test_client(addr: String) -> Result<()> {
             send_and_get(
                 &mut stream,
                 Message::text(StreamMessage::Url(Url::parse(
-                    "https://www.youtube.com/watch?v=668nUCeBHyY"
+                    "https://mobile.twitter.com/KatieDaviscourt/status/1317765993385529346"
                 )?))
             )
             .await?
@@ -575,4 +620,18 @@ where
                 })
                 .map(str::to_string)
         })
+}
+
+fn random_temp_file_path() -> std::path::PathBuf {
+    use rand::Rng;
+
+    let mut dir = env::temp_dir();
+    let mut rng = rand::thread_rng();
+    let chars: String = std::iter::repeat(())
+        .map(|()| rng.sample(rand::distributions::Alphanumeric))
+        .take(7)
+        .collect();
+
+    dir.push(chars.as_str());
+    dir
 }
