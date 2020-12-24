@@ -1,6 +1,8 @@
 syntax = "proto3";
 package main;
 
+import "google/protobuf/empty.proto";
+
 // state machine:
 //
 // req Handshake -> resp Accepted -> req TrancodeURL
@@ -18,10 +20,10 @@ package main;
 // req _ -> resp Invalid
 message TranscodeReq {
   oneof req {
-    Empty handshake = 1;
+    google.protobuf.Empty handshake = 1;
     Transcode transcode = 2;
-    Empty status = 3;
-    Empty cancel = 4;
+    google.protobuf.Empty status = 3;
+    google.protobuf.Empty cancel = 4;
   }
 
   message Transcode {
@@ -31,18 +33,23 @@ message TranscodeReq {
 
 message TranscodeResp {
   oneof resp {
-    Result accepted = 1;
-    JobStatus job_status = 2;
+    // generic error from encoding or the server; assume that the stream is over.
+    string error = 1;
+    // accepted is returned after a handshake. if it is not ok, the handshake failed.
+    Result accepted = 2;
+    // job_status is returned from calling status or transcode_url.
+    JobStatus job_status = 3;
   }
 
   message JobStatus {
     oneof state {
-      Empty unknown = 1;
-      Empty queued = 2;
-      Empty processing = 3;
-      Empty uploading = 4;
-      Result completed = 5;
-      Empty cancelled = 6;
+      google.protobuf.Empty unknown = 1;
+      google.protobuf.Empty no_jobs = 2;
+      google.protobuf.Empty queued = 3;
+      google.protobuf.Empty processing = 4;
+      google.protobuf.Empty uploading = 5;
+      Result completed = 6;
+      google.protobuf.Empty cancelled = 7;
     }
   }
 }
@@ -53,5 +60,3 @@ message Result {
     string err = 2;
   }
 }
-
-message Empty {}

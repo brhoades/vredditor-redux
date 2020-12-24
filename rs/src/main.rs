@@ -100,16 +100,17 @@ async fn accept_connection(mut eq: JobEnqueuer, stream: TcpStream) -> Result<()>
     let stream = tokio_tungstenite::accept_async(stream)
         .await
         .context("error during handshake")?;
-    let (mut tx, rx) = stream.split();
+    let (tx, rx) = stream.split();
 
     let mut stream_state = StreamState::New;
     let mut rx = rx.map(|v| match v {
-        Err(e) => panic!("infallible"),
+        Err(e) => panic!(e), // infallible
         Ok(o) => o,
     }).map(|v| match TranscodeReq::try_from(v) {
         Ok(v) => v.req.ok_or_else(|| format_err!("missing transcode request message")),
         Err(v) => Err(v),
     });
+    let mut tx = tx.with(|resp| { futures::future::ok::<_, Error>(Into::<Message>::into(resp)) } );
 
     while let Some(msg) = rx.next().await {
         stream_state = match msg {
@@ -141,18 +142,17 @@ async fn handle_message<'a, T>(
     msg: TranscodeMessage,
 ) -> Result<StreamState>
 where
-    T: futures::Sink<Message> + std::marker::Unpin,
-    <T as futures::Sink<Message>>::Error: std::error::Error + Sync + Send + 'static,
+    T: futures::Sink<TranscodeRespMessage, Error = Error> + futures::SinkExt<TranscodeRespMessage> + std::marker::Unpin,
 {
     match msg {
         TranscodeMessage::Handshake(_) => match &state {
             StreamState::New => {
-                tx.send(Message::Text("READY".to_string())).await?;
+                tx.send(TranscodeRespMessage::handshake_accepted("READY")).await?;
                 return Ok(StreamState::Handshake);
             }
             other => {
                 debug!("{} -> unexpected handshake from state {:?}", addr, other);
-                tx.send(Message::Text("cannot handshake at this time".to_string()))
+                tx.send(TranscodeRespMessage::handshake_rejected("cannot handshake at this time"))
                     .await?;
             }
         },
@@ -163,7 +163,7 @@ where
                 let url = match Url::parse(&url) {
                     Ok(url) => url,
                     Err(e) => {
-                        tx.send(Message::Text(format!("error: {}", e))).await?;
+                        tx.send(TranscodeRespMessage::Error(format!("error: {}", e))).await?;
                         return Ok(state);
                     },
                 };
@@ -172,7 +172,7 @@ where
                 let job = eq.enqueue_url(url).await?;
                 debug!("{} -> job created, url enqueued: {:?}", addr, job);
 
-                tx.send(Message::Text("QUEUED".to_string())).await?;
+                tx.send(TranscodeRespMessage::queued()).await?;
                 return Ok(StreamState::Queued(job));
             }
             other => {
@@ -180,23 +180,27 @@ where
                     "{} -> tried to provide url at state {:?}: {:?}",
                     addr, state, other,
                 );
-                tx.send(Message::Text("cannot process url at this time".to_string()))
-                    .await?;
+                tx.send(TranscodeRespMessage::Error("cannot process another url at this time".into())).await?;
             }
         },
-        TranscodeMessage::Status(_) => match &state {
-            StreamState::Queued(job) | StreamState::Done(job) => {
-                tx.send(Message::Text(format!("STATUS {}", job.state.lock().await)))
-                    .await?
-            }
-            _ => tx.send(Message::Text("STATUS NO_JOBS".to_string())).await?,
+        TranscodeMessage::Status(_) => {
+            let state = match &state {
+                StreamState::New => JobState::Unknown(()),
+                StreamState::Handshake => JobState::NoJobs(()),
+                StreamState::Queued(job) => JobState::Queued(()),
+                StreamState::Done(job) => JobState::Completed(Ok(&job.url).into())
+            };
+
+            tx.send(TranscodeRespMessage::JobStatus(JobStatus {
+                state: Some(state),
+            })).await?;
         },
         v => {
             debug!("{} -> Invalid message \"{:?}\"", addr, v);
-            tx.send(Message::Text(format!(
-                "unknown proto message type: {:?}",
-                v
-            )))
+            tx.send(TranscodeRespMessage::Error(
+                format!("unknown proto message type: {:?}",
+                v)
+                    ))
             .await?;
         }
     }

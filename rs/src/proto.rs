@@ -12,8 +12,10 @@ mod proto_inner {
 pub use proto_inner::{
     result::ResultInner as RawProtoResult,
     transcode_req::{self, Req as TranscodeMessage, Transcode as TranscodeOpts},
-    transcode_resp::{self, job_status::State as JobState, JobStatus},
-    Empty, Result as RawProtoResultWrapper, TranscodeReq,
+    transcode_resp::{
+        self, job_status::State as JobState, JobStatus, Resp as TranscodeRespMessage,
+    },
+    Result as RawProtoResultWrapper, TranscodeReq, TranscodeResp,
 };
 
 /**********************
@@ -67,7 +69,7 @@ where
 
 impl Default for JobState {
     fn default() -> JobState {
-        JobState::Queued(Empty::default())
+        JobState::Queued(())
     }
 }
 
@@ -76,7 +78,8 @@ impl Into<String> for &JobState {
         use JobState::*;
 
         match self {
-            Queued(_) => "QUEUED".to_string(),
+            Queued(()) => "QUEUED".to_string(),
+            NoJobs(()) => "NO JOBS".to_string(),
             Processing(_) => "PROCESSING".to_string(),
             Uploading(_) => "UPLOADING".to_string(),
             Completed(result) => match result.into() {
@@ -203,8 +206,55 @@ impl JobStateCheck for JobStatus {
 }
 
 /************************
- * ReqState
+ * TranscodeResp
  *************************/
+impl TranscodeRespMessage {
+    pub fn handshake_accepted<T: Into<String>>(msg: T) -> TranscodeRespMessage {
+        Self::Accepted(Ok(msg.into()).into())
+    }
+
+    pub fn handshake_rejected<T: Display>(msg: T) -> TranscodeRespMessage {
+        Self::Accepted(
+            Into::<RawProtoResultWrapper>::into(Err::<String, _>(format_err!("{}", msg))).into(),
+        )
+    }
+
+    pub fn queued() -> Self {
+        Self::JobStatus(JobStatus {
+            state: Some(JobState::Queued(())),
+        })
+    }
+
+    pub fn processing() -> Self {
+        Self::JobStatus(JobStatus {
+            state: Some(JobState::Processing(())),
+        })
+    }
+
+    pub fn uploading() -> Self {
+        Self::JobStatus(JobStatus {
+            state: Some(JobState::Uploading(())),
+        })
+    }
+
+    pub fn cancelled() -> Self {
+        Self::JobStatus(JobStatus {
+            state: Some(JobState::Cancelled(())),
+        })
+    }
+
+    pub fn no_jobs() -> Self {
+        Self::JobStatus(JobStatus {
+            state: Some(JobState::NoJobs(())),
+        })
+    }
+
+    pub fn unknown() -> Self {
+        Self::JobStatus(JobStatus {
+            state: Some(JobState::Unknown(())),
+        })
+    }
+}
 
 /************************
  * Websocket integrations
@@ -226,8 +276,19 @@ impl TryFrom<Message> for TranscodeReq {
     }
 }
 
-/*
 impl TryInto<Message> for TranscodeReq {
+    type Error = anyhow::Error;
+
+    fn try_into(self) -> Result<Message> {
+        let mut buf = vec![];
+
+        self.encode(&mut buf)?;
+        Ok(Message::Binary(buf))
+    }
+}
+
+/*
+impl TryInto<Message> for TranscodeResp {
     type Error = anyhow::Error;
 
     fn try_into(self) -> Result<Message> {
@@ -237,5 +298,26 @@ impl TryInto<Message> for TranscodeReq {
         Ok(Message::Binary(buf))
     }
 }
-
 */
+
+// TryInto but also swallow the error into a proto.
+impl Into<Message> for TranscodeResp {
+    fn into(self) -> Message {
+        let mut buf = vec![];
+
+        match self.encode(&mut buf) {
+            Ok(_) => Message::Binary(buf),
+            Err(e) => TranscodeRespMessage::Error(format!(
+                "failed to serialize message {:?}: {}",
+                self, e
+            ))
+            .into(),
+        }
+    }
+}
+
+impl Into<Message> for TranscodeRespMessage {
+    fn into(self) -> Message {
+        TranscodeResp { resp: Some(self) }.into()
+    }
+}
