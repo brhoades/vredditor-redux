@@ -14,12 +14,22 @@ rand = "0.7"
 
 log = "0.4"
 env_logger = "0.8"
-failure = "0.1.8"
+anyhow = "1.0"
 
 tokio = { version = "0.3", default-features = false, features = ["rt-multi-thread", "macros", "sync", "net", "io-util", "time", "process", "fs"] }
 tokio-tungstenite = { git = "https://github.com/snapview/tokio-tungstenite", rev = "bea9b86", features = ["connect", "stream"] }
 futures = { version = "0.3" }
 futures-util = { version = "0.3", default-features = false, features = ["async-await", "sink", "std"] }
+
+prost = "0.6"
+# Only necessary if using Protobuf well-known types:
+prost-types = "0.6"
+
+
+[build-dependencies]
+prost-build = "0.6"
+glob = "0.3"
+anyhow = "1.0"
 
 [dev-dependencies]
 websocket-lite = "0.4"

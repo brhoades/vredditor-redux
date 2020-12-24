@@ -2,7 +2,7 @@ use std::env;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use failure::{format_err, Error};
+use anyhow::*;
 use log::{debug, error, info, warn};
 use url::Url;
 
@@ -202,12 +202,12 @@ impl Job {
 async fn accept_connection(mut eq: JobEnqueuer, stream: TcpStream) -> Result<()> {
     let addr = stream
         .peer_addr()
-        .map_err(|e| format_err!("connected streams should have a peer address: {}", e))?;
+        .context("connected streams should have a peer address")?;
     info!("Peer address: {}", addr);
 
     let stream = tokio_tungstenite::accept_async(stream)
         .await
-        .map_err(|e| format_err!("error during handshake: {}", e))?;
+        .context("error during handshake")?;
     let (mut tx, mut rx) = stream.split();
 
     let mut stream_state = StreamState::New;
@@ -255,7 +255,7 @@ async fn handle_message<T>(
 ) -> Result<StreamState>
 where
     T: futures::Sink<Message> + std::marker::Unpin,
-    <T as futures::Sink<Message>>::Error: std::error::Error + Sync + Send + failure::Fail + 'static,
+    <T as futures::Sink<Message>>::Error: std::error::Error + Sync + Send + Into<anyhow::Error>,
 {
     match StreamMessage::from(msg) {
         StreamMessage::New => {
@@ -311,7 +311,7 @@ where
                 .map(|_| state.clone())
         }
     }
-    .map_err(failure::Error::from)
+    .map_err(Into::into)
 }
 
 #[derive(Debug)]
@@ -634,4 +634,8 @@ fn random_temp_file_path() -> std::path::PathBuf {
 
     dir.push(chars.as_str());
     dir
+}
+
+pub mod proto {
+    include!(concat!(env!("OUT_DIR"), "/main.rs"));
 }
