@@ -1,9 +1,13 @@
+pub mod proto;
+
+use std::convert::{TryFrom, TryInto};
 use std::env;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
 use anyhow::*;
 use log::{debug, error, info, warn};
+use proto::*;
 use url::Url;
 
 use futures_util::{SinkExt, StreamExt};
@@ -14,8 +18,6 @@ use tokio::{
     try_join,
 };
 use tokio_tungstenite::tungstenite::protocol::Message;
-
-type Result<T> = std::result::Result<T, Error>;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -46,125 +48,6 @@ async fn tcp_listener_loop(eq: JobEnqueuer, addr: String) -> Result<()> {
     Ok(())
 }
 
-#[derive(Clone, Debug)]
-enum StreamMessage {
-    New,
-    Handshake,
-    Url(Url),
-    Status,
-    Invalid(String),
-}
-
-impl Into<String> for StreamMessage {
-    fn into(self) -> String {
-        match self {
-            StreamMessage::New => "NEW".to_string(),
-            StreamMessage::Handshake => "HANDSHAKE".to_string(),
-            StreamMessage::Url(v) => format!("URL {}", v),
-            StreamMessage::Status => "STATUS".to_string(),
-            StreamMessage::Invalid(v) => format!("Unknown command: {}", v),
-        }
-    }
-}
-
-impl std::fmt::Display for StreamMessage {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let string: String = self.clone().into();
-        write!(f, "{}", string)
-    }
-}
-
-impl<T> From<T> for StreamMessage
-where
-    T: AsRef<str>,
-{
-    fn from(s: T) -> Self {
-        use StreamMessage::*;
-
-        match s.as_ref() {
-            "NEW" => New,
-            "HANDSHAKE" => Handshake,
-            "STATUS" => Status,
-            v => {
-                if v.starts_with("URL ") {
-                    match url::Url::parse(v.trim_start_matches("URL ")) {
-                        Ok(v) => Url(v),
-                        Err(e) => Invalid(format!("bad url: {}", e)),
-                    }
-                } else {
-                    Invalid(v.to_string())
-                }
-            }
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
-enum StreamState {
-    New,
-    Handshake,
-    Queued(Job),
-    Done(Job),
-}
-
-impl Into<String> for StreamState {
-    fn into(self) -> String {
-        match self {
-            StreamState::New => "NEW".to_string(),
-            StreamState::Handshake => "HANDSHAKE".to_string(),
-            StreamState::Queued(_job) => "QUEUED".to_string(),
-            StreamState::Done(_job) => "DONE".to_string(),
-        }
-    }
-}
-
-impl std::fmt::Display for StreamState {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let string: String = self.clone().into();
-        write!(f, "{}", string)
-    }
-}
-
-#[derive(Debug, PartialEq, Eq)]
-pub enum JobState {
-    Queued,
-    Processing,
-    Uploading,
-    Complete(std::result::Result<url::Url, String>),
-    Cancelled,
-}
-
-impl Default for JobState {
-    fn default() -> Self {
-        JobState::Queued
-    }
-}
-
-impl Into<String> for JobState {
-    fn into(self) -> String {
-        self.as_string()
-    }
-}
-
-impl JobState {
-    fn as_string(&self) -> String {
-        match self {
-            Self::Queued => "QUEUED".to_string(),
-            Self::Processing => "PROCESSING".to_string(),
-            Self::Uploading => "UPLOADING".to_string(),
-            Self::Complete(Ok(u)) => "COMPLETE: ".to_owned() + u.as_str(),
-            Self::Complete(Err(e)) => format!("FAILED: {}", e),
-            Self::Cancelled => "CANCELLED".to_string(),
-        }
-    }
-}
-
-impl std::fmt::Display for JobState {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.as_string())
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct Job {
     pub state: Arc<Mutex<JobState>>,
@@ -185,9 +68,10 @@ impl Job {
                         "process_job called with job in bad state {:?} (expected {})",
                         state, expected
                     );
-                    *state = JobState::Complete(Err(
-                        "internal server error (state mismatch)".to_owned()
-                    ));
+                    *state = JobState::Completed(
+                        Err::<String, _>(format_err!("internal server error (state mismatch)"))
+                            .into(),
+                    );
                     false
                 }
             }
@@ -199,6 +83,14 @@ impl Job {
     }
 }
 
+#[derive(Debug, Clone)]
+enum StreamState {
+    New,
+    Handshake,
+    Queued(Job),
+    Done(Job),
+}
+
 async fn accept_connection(mut eq: JobEnqueuer, stream: TcpStream) -> Result<()> {
     let addr = stream
         .peer_addr()
@@ -208,110 +100,108 @@ async fn accept_connection(mut eq: JobEnqueuer, stream: TcpStream) -> Result<()>
     let stream = tokio_tungstenite::accept_async(stream)
         .await
         .context("error during handshake")?;
-    let (mut tx, mut rx) = stream.split();
+    let (mut tx, rx) = stream.split();
 
     let mut stream_state = StreamState::New;
+    let mut rx = rx.map(|v| match v {
+        Err(e) => panic!("infallible"),
+        Ok(o) => o,
+    }).map(|v| match TranscodeReq::try_from(v) {
+        Ok(v) => v.req.ok_or_else(|| format_err!("missing transcode request message")),
+        Err(v) => Err(v),
+    });
 
     while let Some(msg) = rx.next().await {
-        if let Err(e) = msg {
-            warn!("{} -> error on connection: {}", addr, e);
-            continue;
-        }
+        stream_state = match msg {
+            Ok(msg) => match handle_message(stream_state, &mut tx, &mut eq, &addr, msg).await {
+                Ok(state) => state,
+                Err(e) => {
+                    warn!(
+                        "{} -> handle_message errored, assuming conn closed: {}",
+                        addr, e
+                    );
 
-        let msg = match msg.unwrap() {
-            Message::Text(v) => {
-                debug!("{} -> {:?}", addr, v);
-                v
-            }
-            v => {
-                info!("{} -> unknown message type: {:?}", addr, v);
-                tx.send(Message::Text(format!("unknown proto message type: {}", v)))
-                    .await?;
-                continue;
-            }
-        };
-
-        stream_state = match handle_message(&stream_state, &mut tx, &mut eq, &addr, msg).await {
-            Ok(state) => state,
+                    return Ok(());
+                }
+            },
             Err(e) => {
-                warn!(
-                    "{} -> handle_message errored, assuming conn closed: {}",
-                    addr, e
-                );
-
-                return Ok(());
-            }
+                warn!("{} -> error on connection: {}", addr, e);
+                continue;
+            },
         };
     }
     Ok(())
 }
 
-async fn handle_message<T>(
-    state: &StreamState,
+async fn handle_message<'a, T>(
+    state: StreamState,
     tx: &mut T,
     eq: &mut JobEnqueuer,
     addr: &SocketAddr,
-    msg: String,
+    msg: TranscodeMessage,
 ) -> Result<StreamState>
 where
     T: futures::Sink<Message> + std::marker::Unpin,
-    <T as futures::Sink<Message>>::Error: std::error::Error + Sync + Send + Into<anyhow::Error>,
+    <T as futures::Sink<Message>>::Error: std::error::Error + Sync + Send + 'static,
 {
-    match StreamMessage::from(msg) {
-        StreamMessage::New => {
-            debug!("{} -> tried to reset already active connection", addr);
-            Ok(state.clone())
-        }
-        StreamMessage::Handshake => match state {
-            StreamState::New => tx
-                .send(Message::Text("READY".to_string()))
-                .await
-                .map(|_| StreamState::Handshake),
+    match msg {
+        TranscodeMessage::Handshake(_) => match &state {
+            StreamState::New => {
+                tx.send(Message::Text("READY".to_string())).await?;
+                return Ok(StreamState::Handshake);
+            }
             other => {
-                debug!("{} -> unexpected handshake from state {}", addr, other);
+                debug!("{} -> unexpected handshake from state {:?}", addr, other);
                 tx.send(Message::Text("cannot handshake at this time".to_string()))
-                    .await
-                    .map(|_| state.clone())
+                    .await?;
             }
         },
-        StreamMessage::Url(url) => match state {
+        TranscodeMessage::Transcode(TranscodeOpts{
+            url
+        }) => match &state {
             StreamState::Handshake => {
+                let url = match Url::parse(&url) {
+                    Ok(url) => url,
+                    Err(e) => {
+                        tx.send(Message::Text(format!("error: {}", e))).await?;
+                        return Ok(state);
+                    },
+                };
                 debug!("{} -> enqueuing URL {}", addr, url);
+
                 let job = eq.enqueue_url(url).await?;
                 debug!("{} -> job created, url enqueued: {:?}", addr, job);
 
-                tx.send(Message::Text("QUEUED".to_string()))
-                    .await
-                    .map(|_| StreamState::Queued(job))
+                tx.send(Message::Text("QUEUED".to_string())).await?;
+                return Ok(StreamState::Queued(job));
             }
             other => {
                 debug!(
-                    "{} -> tried to provide url at state {} (url: {})",
-                    addr, other, other,
+                    "{} -> tried to provide url at state {:?}: {:?}",
+                    addr, state, other,
                 );
                 tx.send(Message::Text("cannot process url at this time".to_string()))
-                    .await
-                    .map(|_| state.clone())
+                    .await?;
             }
         },
-        StreamMessage::Status => match state {
-            StreamState::Queued(job) | StreamState::Done(job) => tx
-                .send(Message::Text(format!("STATUS {}", job.state.lock().await)))
-                .await
-                .map(|_| state.clone()),
-            _ => tx
-                .send(Message::Text("STATUS NO_JOBS".to_string()))
-                .await
-                .map(|_| state.clone()),
+        TranscodeMessage::Status(_) => match &state {
+            StreamState::Queued(job) | StreamState::Done(job) => {
+                tx.send(Message::Text(format!("STATUS {}", job.state.lock().await)))
+                    .await?
+            }
+            _ => tx.send(Message::Text("STATUS NO_JOBS".to_string())).await?,
         },
-        StreamMessage::Invalid(v) => {
-            debug!("{} -> Invalid message \"{}\"", addr, v);
-            tx.send(Message::Text(format!("unknown proto message type: {}", v)))
-                .await
-                .map(|_| state.clone())
+        v => {
+            debug!("{} -> Invalid message \"{:?}\"", addr, v);
+            tx.send(Message::Text(format!(
+                "unknown proto message type: {:?}",
+                v
+            )))
+            .await?;
         }
     }
-    .map_err(Into::into)
+
+    Ok(state)
 }
 
 #[derive(Debug)]
@@ -373,7 +263,10 @@ impl JobEnqueuer {
 
 async fn process_job(mut job: Job) {
     if !job
-        .set_state_if_eq(JobState::Processing, Some(JobState::Queued))
+        .set_state_if_eq(
+            JobState::Processing(Default::default()),
+            Some(JobState::Queued(Default::default())),
+        )
         .await
     {
         error!("process_job called with job in bad state: {:?}", job);
@@ -383,14 +276,17 @@ async fn process_job(mut job: Job) {
     match youtube_dl_download(url.to_string()).await {
         Ok(bytes) => {
             println!("downloaded {} bytes", bytes.len());
-            job.set_state_if_eq(JobState::Uploading, Some(JobState::Processing))
-                .await;
+            job.set_state_if_eq(
+                JobState::Uploading(Default::default()),
+                Some(JobState::Processing(Default::default())),
+            )
+            .await;
         }
         Err(e) => {
             warn!("error processing job {:?} for {}: {}", job, url, e);
             job.set_state_if_eq(
-                JobState::Complete(Err(e.to_string())),
-                Some(JobState::Processing),
+                JobState::Completed(RawProtoResultWrapper::from(Err::<String, _>(e))),
+                Some(JobState::Processing(Default::default())),
             )
             .await;
         }
@@ -532,14 +428,14 @@ async fn run_test_client(addr: String) -> Result<()> {
 
         assert_eq!(
             "READY",
-            send_and_get(&mut stream, Message::text(StreamMessage::Handshake)).await?
+            send_and_get(&mut stream, Message::text(TranscodeMessage::Handshake)).await?
         );
 
         assert_eq!(
             "QUEUED",
             send_and_get(
                 &mut stream,
-                Message::text(StreamMessage::Url(Url::parse(
+                Message::text(TranscodeMessage::Url(Url::parse(
                     "https://mobile.twitter.com/KatieDaviscourt/status/1317765993385529346"
                 )?))
             )
@@ -554,7 +450,7 @@ async fn run_test_client(addr: String) -> Result<()> {
                 break;
             }
 
-            let res = send_and_get(&mut stream, Message::text(StreamMessage::Status)).await?;
+            let res = send_and_get(&mut stream, Message::text(TranscodeMessage::Status)).await?;
             if res.starts_with("STATUS ") {
                 debug!("status: \"{}\"", res);
                 let res = res.trim_start_matches("STATUS ");
@@ -634,8 +530,4 @@ fn random_temp_file_path() -> std::path::PathBuf {
 
     dir.push(chars.as_str());
     dir
-}
-
-pub mod proto {
-    include!(concat!(env!("OUT_DIR"), "/main.rs"));
 }

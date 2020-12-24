@@ -1,64 +1,57 @@
 syntax = "proto3";
 package main;
 
-enum TranscodeState {
-  UNKNOWN = 0;
-  HANDSHAKE = 1;
-  QUEUED = 2;
-  DONE = 3;
-}
-
-// state automata:
+// state machine:
 //
 // req Handshake -> resp Accepted -> req TrancodeURL
+//
 // req TranscodeURL -> resp JobStateResp -> req Status
+//
 // req Status -> resp JobStateResp -> req Status
+//
 // req Status -> resp JobStateResp -> req Cancel
+//
 // req Status -> resp JobStateResp.Complete -> req TranscodeURL
+//
 // req Cancel -> resp Cancelled -> req TranscodeURL
+//
 // req _ -> resp Invalid
 message TranscodeReq {
   oneof req {
-    Handshake handshake = 1;
+    Empty handshake = 1;
     Transcode transcode = 2;
-    Status status = 3;
-    Cancel cancel = 4;
+    Empty status = 3;
+    Empty cancel = 4;
   }
 
-  message Handshake {}
   message Transcode {
     string url = 1;
   }
-  message Status {}
-  message Cancel {}
 }
 
 message TranscodeResp {
   oneof resp {
-    Accepted accepted = 1;
-    JobStatus job_state = 2;
+    Result accepted = 1;
+    JobStatus job_status = 2;
   }
 
-  message Accepted {}
   message JobStatus {
-    JobState state = 1;
-
-    TranscodeResult result = 2;
-  }
-
-  enum JobState {
-    UNKNOWN = 0;
-    QUEUED = 1;
-    PROCESSING = 2;
-    UPLOADING = 3;
-    COMPLETE = 4;
-    CANCELLED = 5;
+    oneof state {
+      Empty unknown = 1;
+      Empty queued = 2;
+      Empty processing = 3;
+      Empty uploading = 4;
+      Result completed = 5;
+      Empty cancelled = 6;
+    }
   }
 }
 
-message TranscodeResult {
-  oneof result {
-    string url = 1;
-    string error = 2;
+message Result {
+  oneof result_inner {
+    string ok = 1;
+    string err = 2;
   }
 }
+
+message Empty {}
