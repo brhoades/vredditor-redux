@@ -1,4 +1,4 @@
-use std::convert::{TryFrom};
+use std::convert::TryFrom;
 use std::fmt::{Display, Formatter, Result as FmtResult};
 
 use anyhow::{format_err, Result};
@@ -273,11 +273,9 @@ impl TranscodeRespMessage {
 impl TranscodeReq {
     pub fn transcode<A: Into<String>>(msg: A) -> Self {
         Self {
-            req: Some(
-                TranscodeReqMessage::Transcode(TranscodeOpts{
-                    url: msg.into()
-                })
-            ),
+            req: Some(TranscodeReqMessage::Transcode(TranscodeOpts {
+                url: msg.into(),
+            })),
         }
     }
 }

@@ -49,7 +49,7 @@ async fn run_test_client<T: AsRef<str>>(addr: T) -> Result<()> {
     let mut stream = Err(format_err!("never connected to server"));
 
     // just keeping this in a loop so I don't have to type the return value of ClientBuilder.
-    while let _ = int.next().await {
+    while int.next().await.is_some() {
         // wait for the server to come up.
         sleep(Duration::from_millis(10)).await;
 
@@ -81,9 +81,9 @@ async fn run_test_client<T: AsRef<str>>(addr: T) -> Result<()> {
     .await?;
     assert_status!(res, JobState::Queued(_));
 
-    let mut int = interval(Duration::from_millis(100)).take(20);
+    let mut int = interval(Duration::from_millis(100)).take(50);
     let mut times: i8 = 0;
-    while let _ = int.next().await {
+    while int.next().await.is_some() {
         times += 1;
 
         let res = send_and_get(&mut stream, TranscodeReqMessage::Status(())).await?;

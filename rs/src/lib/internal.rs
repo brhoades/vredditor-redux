@@ -1,3 +1,3 @@
 pub(crate) use anyhow::*;
 #[allow(unused_imports)]
-pub(crate) use log::{debug, error, info, warn, trace};
+pub(crate) use log::{debug, error, info, trace, warn};

@@ -1,6 +1,6 @@
-use std::{iter, path, env};
+use std::{env, iter, path};
 
-use rand::{Rng, thread_rng, distributions};
+use rand::{distributions, thread_rng, Rng};
 
 pub(crate) fn random_temp() -> path::PathBuf {
     let mut dir = env::temp_dir();
