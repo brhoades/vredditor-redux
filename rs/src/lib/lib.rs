@@ -1,8 +1,8 @@
-pub mod proto;
 mod file;
 pub(crate) mod internal;
+pub mod proto;
 
-use std::convert::{TryFrom};
+use std::convert::TryFrom;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -52,6 +52,10 @@ impl Job {
     async fn set_state_if_eq(&mut self, new: JobState, expected: Option<JobState>) -> bool {
         let mut state = self.state.lock().await;
         match (&mut *state, expected) {
+            (state, None) => {
+                *state = new;
+                true
+            }
             (state, Some(expected)) => {
                 if *state == expected {
                     *state = new;
@@ -67,10 +71,6 @@ impl Job {
                     );
                     false
                 }
-            }
-            (state, None) => {
-                *state = new;
-                true
             }
         }
     }
@@ -97,14 +97,18 @@ async fn accept_connection(mut eq: JobEnqueuer, stream: TcpStream) -> Result<()>
     let (tx, rx) = stream.split();
 
     let mut stream_state = StreamState::New;
-    let mut rx = rx.map(|v| match v {
-        Err(e) => panic!(e), // infallible
-        Ok(o) => o,
-    }).map(|v| match TranscodeReq::try_from(v) {
-        Ok(v) => v.req.ok_or_else(|| format_err!("missing transcode request message")),
-        Err(v) => Err(v),
-    });
-    let mut tx = tx.with(|resp| { futures::future::ok::<_, Error>(Into::<Message>::into(resp)) } );
+    let mut rx = rx
+        .map(|v| match v {
+            Err(e) => panic!(e), // infallible
+            Ok(o) => o,
+        })
+        .map(|v| match TranscodeReq::try_from(v) {
+            Ok(v) => v
+                .req
+                .ok_or_else(|| format_err!("missing transcode request message")),
+            Err(v) => Err(v),
+        });
+    let mut tx = tx.with(|resp| futures::future::ok::<_, Error>(Into::<Message>::into(resp)));
 
     while let Some(msg) = rx.next().await {
         stream_state = match msg {
@@ -122,7 +126,7 @@ async fn accept_connection(mut eq: JobEnqueuer, stream: TcpStream) -> Result<()>
             Err(e) => {
                 warn!("{} -> error on connection: {}", addr, e);
                 continue;
-            },
+            }
         };
     }
     Ok(())
@@ -136,30 +140,34 @@ async fn handle_message<'a, T>(
     msg: TranscodeReqMessage,
 ) -> Result<StreamState>
 where
-    T: futures::Sink<TranscodeRespMessage, Error = Error> + futures::SinkExt<TranscodeRespMessage> + std::marker::Unpin,
+    T: futures::Sink<TranscodeRespMessage, Error = Error>
+        + futures::SinkExt<TranscodeRespMessage>
+        + std::marker::Unpin,
 {
     match msg {
         TranscodeReqMessage::Handshake(_) => match &state {
             StreamState::New => {
-                tx.send(TranscodeRespMessage::handshake_accepted("READY")).await?;
+                tx.send(TranscodeRespMessage::handshake_accepted("READY"))
+                    .await?;
                 return Ok(StreamState::Handshake);
             }
             other => {
                 debug!("{} -> unexpected handshake from state {:?}", addr, other);
-                tx.send(TranscodeRespMessage::handshake_rejected("cannot handshake at this time"))
-                    .await?;
+                tx.send(TranscodeRespMessage::handshake_rejected(
+                    "cannot handshake at this time",
+                ))
+                .await?;
             }
         },
-        TranscodeReqMessage::Transcode(TranscodeOpts{
-            url
-        }) => match &state {
+        TranscodeReqMessage::Transcode(TranscodeOpts { url }) => match &state {
             StreamState::Handshake => {
                 let url = match Url::parse(&url) {
                     Ok(url) => url,
                     Err(e) => {
-                        tx.send(TranscodeRespMessage::Error(format!("error: {}", e))).await?;
+                        tx.send(TranscodeRespMessage::Error(format!("error: {}", e)))
+                            .await?;
                         return Ok(state);
-                    },
+                    }
                 };
                 debug!("{} -> enqueuing URL {}", addr, url);
 
@@ -174,27 +182,31 @@ where
                     "{} -> tried to provide url at state {:?}: {:?}",
                     addr, state, other,
                 );
-                tx.send(TranscodeRespMessage::Error("cannot process another url at this time".into())).await?;
+                tx.send(TranscodeRespMessage::Error(
+                    "cannot process another url at this time".into(),
+                ))
+                .await?;
             }
         },
         TranscodeReqMessage::Status(_) => {
             let state = match &state {
                 StreamState::New => JobState::Unknown(()),
                 StreamState::Handshake => JobState::NoJobs(()),
-                StreamState::Queued(_) => JobState::Queued(()),
-                StreamState::Done(job) => JobState::Completed(Ok(&job.url).into())
+                StreamState::Queued(job) | StreamState::Done(job) => job.state.lock().await.clone(),
             };
+            trace!("{} -> job status {}", addr, state);
 
             tx.send(TranscodeRespMessage::JobStatus(JobStatus {
                 state: Some(state),
-            })).await?;
-        },
+            }))
+            .await?;
+        }
         v => {
             debug!("{} -> Invalid message \"{:?}\"", addr, v);
-            tx.send(TranscodeRespMessage::Error(
-                format!("unknown proto message type: {:?}",
-                v)
-                    ))
+            tx.send(TranscodeRespMessage::Error(format!(
+                "unknown proto message type: {:?}",
+                v
+            )))
             .await?;
         }
     }
@@ -313,26 +325,27 @@ async fn youtube_dl_download<S: AsRef<std::ffi::OsStr> + Clone>(url: S) -> Resul
     let pathb = file::random_temp();
     let path = pathb
         .to_str()
-        .ok_or_else(|| format_err!("failed to convert pathbuf to str: {:?}", pathb))?;
+        .with_context(|| format!("failed to convert pathbuf to str: {:?}", pathb))?;
     debug!("temp file path created: {}", path);
 
     let template = format!("{}.%(ext)s", path);
+    let args = vec!["-q", "--get-filename", "-o", &template];
     let filename_output = youtube_dl(url.clone(), Option::<Vec<S>>::None)
-        .args(&["-q", "--get-filename", "-o"])
-        .arg(&template)
         .stdout(std::process::Stdio::piped())
         .stdin(std::process::Stdio::piped())
-        .spawn()?
+        .args(&args)
+        .spawn()
+        .with_context(|| format!("failed to spawn youtube-dl command with args: {:?}", args))?
         .wait_with_output()
-        .await?;
+        .await
+        .with_context(|| format!("running youtube-dl command with args {:?}", args))?;
 
     if !filename_output.status.success() {
         warn!(
             "failed to query file name for: {}\n{}",
             url.as_ref().to_str().unwrap(),
-            std::str::from_utf8(&filename_output.stderr).map_err(|e| format_err!(
-                "failed to parse stderr for filename output youtubedl: {}\n{:?}",
-                e,
+            std::str::from_utf8(&filename_output.stderr).with_context(|| format!(
+                "failed to parse stderr for filename output youtubedl:\n{:?}",
                 filename_output.stderr
             ))?
         );

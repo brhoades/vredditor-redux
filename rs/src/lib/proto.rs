@@ -83,8 +83,8 @@ impl Into<String> for &JobState {
             Processing(_) => "PROCESSING".to_string(),
             Uploading(_) => "UPLOADING".to_string(),
             Completed(result) => match result.into() {
-                Ok(u) => "COMPLETE: ".to_owned() + u.as_str(),
-                Err(e) => format!("FAILED: {}", e),
+                Ok(u) => "COMPLETE: OK: ".to_owned() + u.as_str(),
+                Err(e) => format!("COMPLETE: FAILED: {}", e),
             },
             Cancelled(_) => "CANCELLED".to_string(),
             Unknown(_) => "UNKNOWN".to_string(),
