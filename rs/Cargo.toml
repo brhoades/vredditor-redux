@@ -17,6 +17,7 @@ env_logger = "0.8"
 anyhow = "1.0"
 
 tokio = { version = "=0.3.6", default-features = false, features = ["rt-multi-thread", "macros", "sync", "net", "io-util", "time", "process", "fs"] }
+# pins pin-project to 0.2.0, which makes tokio-tungstenite play nice
 websocket-codec = "=0.4.0"
 tokio-tungstenite = { version = "0.12", features = ["connect", "stream"] }
 futures = { version = "0.3" }

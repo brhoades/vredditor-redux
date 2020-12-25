@@ -7,7 +7,7 @@ import "google/protobuf/empty.proto";
 //
 // req Handshake -> resp Accepted -> req TrancodeURL
 //
-// req TranscodeURL -> resp JobStateResp -> req Status
+// req Transcode -> resp JobStateResp -> req Status
 //
 // req Status -> resp JobStateResp -> req Status
 //

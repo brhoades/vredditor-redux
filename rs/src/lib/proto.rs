@@ -1,4 +1,4 @@
-use std::convert::{TryFrom, TryInto};
+use std::convert::{TryFrom};
 use std::fmt::{Display, Formatter, Result as FmtResult};
 
 use anyhow::{format_err, Result};
@@ -11,7 +11,7 @@ mod proto_inner {
 
 pub use proto_inner::{
     result::ResultInner as RawProtoResult,
-    transcode_req::{self, Req as TranscodeMessage, Transcode as TranscodeOpts},
+    transcode_req::{self, Req as TranscodeReqMessage, Transcode as TranscodeOpts},
     transcode_resp::{
         self, job_status::State as JobState, JobStatus, Resp as TranscodeRespMessage,
     },
@@ -208,6 +208,16 @@ impl JobStateCheck for JobStatus {
 /************************
  * TranscodeResp
  *************************/
+#[cfg(test)]
+impl TranscodeResp {
+    pub fn into_state(self) -> Option<JobStatus> {
+        match self.resp {
+            Some(TranscodeRespMessage::JobStatus(state)) => Some(state),
+            _ => None,
+        }
+    }
+}
+
 impl TranscodeRespMessage {
     pub fn handshake_accepted<T: Into<String>>(msg: T) -> TranscodeRespMessage {
         Self::Accepted(Ok(msg.into()).into())
@@ -257,6 +267,22 @@ impl TranscodeRespMessage {
 }
 
 /************************
+ * TranscodeReq
+ *************************/
+
+impl TranscodeReq {
+    pub fn transcode<A: Into<String>>(msg: A) -> Self {
+        Self {
+            req: Some(
+                TranscodeReqMessage::Transcode(TranscodeOpts{
+                    url: msg.into()
+                })
+            ),
+        }
+    }
+}
+
+/************************
  * Websocket integrations
  *************************/
 
@@ -276,16 +302,50 @@ impl TryFrom<Message> for TranscodeReq {
     }
 }
 
-impl TryInto<Message> for TranscodeReq {
+impl TryFrom<Message> for TranscodeResp {
     type Error = anyhow::Error;
 
-    fn try_into(self) -> Result<Message> {
+    fn try_from(msg: Message) -> Result<Self> {
+        use Message::*;
+
+        match msg {
+            Binary(bytes) => Ok(Self::decode(bytes.as_slice())?),
+            other => Err(format_err!(
+                "unsupported transcode request type from client: {:?}",
+                other
+            )),
+        }
+    }
+}
+
+impl TryFrom<TranscodeReq> for Message {
+    type Error = anyhow::Error;
+
+    fn try_from(lhs: TranscodeReq) -> Result<Message> {
         let mut buf = vec![];
 
-        self.encode(&mut buf)?;
+        lhs.encode(&mut buf)?;
         Ok(Message::Binary(buf))
     }
 }
+
+/*
+#[cfg(test)]
+impl TranscodeReqMessage {
+    // method cheats and actually parses a reqmessage
+    pub fn from_req(msg: websocket_lite::Message) -> Result<Self> {
+        TranscodeReq::try_from(msg)?.req
+            .ok_or_else(|| format_err!("req message was missing from websocket message transcode req"))
+    }
+}
+
+#[cfg(test)]
+impl TranscodeReq {
+    pub fn try_from(msg: websocket_lite::Message) -> Result<Self> {
+        Ok(Self::decode(msg.into_data().as_ref())?)
+    }
+}
+*/
 
 /*
 impl TryInto<Message> for TranscodeResp {

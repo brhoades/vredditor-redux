@@ -133,13 +133,13 @@ async fn handle_message<'a, T>(
     tx: &mut T,
     eq: &mut JobEnqueuer,
     addr: &SocketAddr,
-    msg: TranscodeMessage,
+    msg: TranscodeReqMessage,
 ) -> Result<StreamState>
 where
     T: futures::Sink<TranscodeRespMessage, Error = Error> + futures::SinkExt<TranscodeRespMessage> + std::marker::Unpin,
 {
     match msg {
-        TranscodeMessage::Handshake(_) => match &state {
+        TranscodeReqMessage::Handshake(_) => match &state {
             StreamState::New => {
                 tx.send(TranscodeRespMessage::handshake_accepted("READY")).await?;
                 return Ok(StreamState::Handshake);
@@ -150,7 +150,7 @@ where
                     .await?;
             }
         },
-        TranscodeMessage::Transcode(TranscodeOpts{
+        TranscodeReqMessage::Transcode(TranscodeOpts{
             url
         }) => match &state {
             StreamState::Handshake => {
@@ -177,7 +177,7 @@ where
                 tx.send(TranscodeRespMessage::Error("cannot process another url at this time".into())).await?;
             }
         },
-        TranscodeMessage::Status(_) => {
+        TranscodeReqMessage::Status(_) => {
             let state = match &state {
                 StreamState::New => JobState::Unknown(()),
                 StreamState::Handshake => JobState::NoJobs(()),
@@ -376,142 +376,4 @@ async fn youtube_dl_download<S: AsRef<std::ffi::OsStr> + Clone>(url: S) -> Resul
     };
     std::fs::remove_file(filename).unwrap();
     res
-}
-
-#[tokio::test]
-async fn test_client() -> Result<()> {
-    use tokio::select;
-    let addr = "localhost:50023".to_owned();
-
-    // we cancel by returning an error from any ne of these
-    select! {
-        res = run_server(addr.clone()) => {
-            return res;
-        },
-        res = run_test_client(addr) => {
-            return res;
-        },
-    }
-}
-
-#[cfg(test)]
-async fn run_test_client(addr: String) -> Result<()> {
-    use std::time::Duration;
-    use tokio::time::sleep;
-    use websocket_lite::Message;
-
-    let mut tries: i8 = 0;
-
-    // just keeping this in a loop so I don't have to type the return value of ClientBuilder.
-    while tries < 5 {
-        // wait for the server to come up.
-        sleep(Duration::from_millis(50)).await;
-
-        let url = format!("ws://{}", addr);
-        let stream = websocket_lite::ClientBuilder::new(&url)?
-            .async_connect()
-            .await
-            .map_err(|e| format_err!("failed to connect to ws server @ {}: {}", addr, e));
-        let mut stream = match stream {
-            Ok(s) => s,
-            Err(e) => {
-                if tries >= 4 {
-                    return Err(e);
-                } else {
-                    tries += 1;
-                    continue;
-                }
-            }
-        };
-
-        assert_eq!(
-            "READY",
-            send_and_get(&mut stream, Message::text(TranscodeMessage::Handshake)).await?
-        );
-
-        assert_eq!(
-            "QUEUED",
-            send_and_get(
-                &mut stream,
-                Message::text(TranscodeMessage::Url(Url::parse(
-                    "https://mobile.twitter.com/KatieDaviscourt/status/1317765993385529346"
-                )?))
-            )
-            .await?
-        );
-
-        let mut int = tokio::time::interval(Duration::from_millis(100));
-        let mut times: i8 = 0;
-        while let _ = int.next().await {
-            times += 1;
-            if times >= 20 {
-                break;
-            }
-
-            let res = send_and_get(&mut stream, Message::text(TranscodeMessage::Status)).await?;
-            if res.starts_with("STATUS ") {
-                debug!("status: \"{}\"", res);
-                let res = res.trim_start_matches("STATUS ");
-
-                if res.starts_with("PROCESSING") {
-                    debug!("PROCESSING");
-                } else if res.starts_with("UPLOADING") {
-                    debug!("UPLOADING");
-                    break;
-                } else {
-                    assert!(false, "unknown state: {}", res);
-                }
-            } else {
-                assert_eq!("COMPLETE", res);
-                debug!("COMPLETE: \"{}\"", res);
-            }
-        }
-
-        break;
-    }
-
-    Ok(())
-}
-
-#[cfg(test)]
-async fn send_and_get<T>(stream: &mut T, msg: websocket_lite::Message) -> Result<String>
-where
-    T: futures::Sink<websocket_lite::Message>
-        + futures::Stream<Item = std::result::Result<websocket_lite::Message, websocket_lite::Error>>
-        + Unpin,
-    <T as futures::Sink<websocket_lite::Message>>::Error: std::fmt::Display,
-{
-    let msg_text = msg.as_text().unwrap();
-
-    stream
-        .send(msg.clone())
-        .await
-        .map_err(|e| format_err!("failed to send message \"{}\" from client: {}", msg_text, e))?;
-
-    stream
-        .next()
-        .await
-        .ok_or_else(|| {
-            format_err!(
-                "no message received from server in response to: \"{}\"",
-                msg_text
-            )
-        })?
-        .map_err(|e| {
-            format_err!(
-                "error from server in response to message \"{}\": {}",
-                msg_text,
-                e
-            )
-        })
-        .and_then(|v| {
-            v.as_text()
-                .ok_or_else(|| {
-                    format_err!(
-                        "no message received from server in response to message: {}",
-                        msg_text
-                    )
-                })
-                .map(str::to_string)
-        })
 }
