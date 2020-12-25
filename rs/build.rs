@@ -1,7 +1,7 @@
 use std::fs::canonicalize;
 use std::path::PathBuf;
 
-use anyhow::{format_err, Context, Result};
+use anyhow::{format_err, Result};
 use glob::glob;
 use prost_build::compile_protos;
 
