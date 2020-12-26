@@ -1,9 +1,10 @@
 mod file;
 pub(crate) mod internal;
 pub mod proto;
+pub mod s3;
+pub mod ytdl;
 
 use std::convert::TryFrom;
-use std::fs::{metadata, remove_file, File};
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
@@ -14,7 +15,6 @@ use url::Url;
 use futures_util::{SinkExt, StreamExt};
 use tokio::{
     net::{TcpListener, TcpStream},
-    process::Command,
     sync::{mpsc, Mutex},
     try_join,
 };
@@ -291,9 +291,20 @@ async fn process_job(mut job: Job) {
     }
 
     let url = &job.url;
-    match youtube_dl_download(url.to_string()).await {
-        Ok(bytes) => {
-            println!("downloaded {} bytes", bytes.len());
+    match ytdl::youtube_dl_download(url, Option::<&[&str]>::None).await {
+        Ok(mut file) => {
+            info!(
+                "downloaded {} bytes",
+                file.file_mut()
+                    .metadata()
+                    .await
+                    .map(|v| v.len().to_string())
+                    .unwrap_or_else(|_| format!(
+                        "[couldn't query bytes for {} in {}]",
+                        url,
+                        file.filename()
+                    ))
+            );
             job.set_state_if_eq(
                 JobState::Uploading(Default::default()),
                 Some(JobState::Processing(Default::default())),
@@ -309,116 +320,4 @@ async fn process_job(mut job: Job) {
             .await;
         }
     }
-}
-
-fn youtube_dl<'a, S, I: IntoIterator<Item = S>>(url: S, extra_args: Option<I>) -> Box<Command>
-where
-    S: AsRef<std::ffi::OsStr>,
-{
-    let mut cmd = Box::new(Command::new("youtube-dl"));
-    cmd.args(&["--max-filesize", "50m"]);
-
-    match extra_args {
-        Some(a) => {
-            cmd.args(a);
-        }
-        None => (),
-    };
-
-    cmd.arg(url);
-    cmd
-}
-
-async fn youtube_dl_download<S: AsRef<std::ffi::OsStr> + Clone>(url: S) -> Result<Vec<u8>> {
-    let pathb = file::random_temp();
-    let path = pathb
-        .to_str()
-        .with_context(|| format!("failed to convert pathbuf to str: {:?}", pathb))?;
-    debug!("temp file path created: {}", path);
-
-    let template = format!("{}.%(ext)s", path);
-    let args = vec!["-q", "--get-filename", "-o", &template];
-    let filename_output = youtube_dl(url.clone(), Option::<Vec<S>>::None)
-        .stdout(std::process::Stdio::piped())
-        .stdin(std::process::Stdio::piped())
-        .args(&args)
-        .spawn()
-        .with_context(|| format!("failed to spawn youtube-dl command with args: {:?}", args))?
-        .wait_with_output()
-        .await
-        .with_context(|| format!("running youtube-dl command with args {:?}", args))?;
-
-    if !filename_output.status.success() {
-        warn!(
-            "failed to query file name for: {}\n{}",
-            url.as_ref().to_str().unwrap(),
-            std::str::from_utf8(&filename_output.stderr).with_context(|| format!(
-                "failed to parse stderr for filename output youtubedl:\n{:?}",
-                filename_output.stderr
-            ))?
-        );
-    }
-
-    // this may not actually exist, sometimes it writes to mkv :/
-    let filename = std::str::from_utf8(&filename_output.stdout)?.trim();
-    info!("filename: {}", filename);
-    let mut filename = Path::new(filename).to_owned();
-
-    let child = youtube_dl(url, Option::<Vec<S>>::None)
-        .args(&["-q", "-o"])
-        .arg(template)
-        .stdout(std::process::Stdio::piped())
-        .stdin(std::process::Stdio::piped())
-        .spawn()?;
-
-    let output = child
-        .wait_with_output()
-        .await
-        .map_err(|e| format_err!("failed to run youtube-dl and get output: {}", e))?;
-
-    // XXX: mp4 is frequently returned but on merging it writes to mkv. Why?
-    if !filename.is_file() {
-        let filestr = format!(
-            "{}.mkv",
-            filename
-                .file_stem()
-                .ok_or_else(|| {
-                    format_err!(
-                        "youtube-dl wrote to unknown file. Expected {} with mkv or templated extension. Files are leaking",
-                        filename.to_str().unwrap(),
-                    )
-                })?
-                .to_str()
-                .unwrap()
-        );
-        filename = filename.parent().unwrap().join(Path::new(filestr.as_str()));
-    }
-
-    if !output.status.success() {
-        warn!(
-            "non-zero exit status ({}) from youtube-dl download:\n{}\n{}\n",
-            output.status,
-            std::str::from_utf8(&output.stderr)?,
-            std::str::from_utf8(&output.stdout)?,
-        );
-        return Err(format_err!("youtube-dl errored",));
-    }
-
-    let res = match tokio::fs::read(&filename).await {
-        std::result::Result::Ok(v) => {
-            debug!("read {} bytes", v.len());
-            Ok(v)
-        }
-        std::result::Result::Err(e) => {
-            warn!(
-                "failed to read from youtube-dl output file: \"{}\" (from {}): {}",
-                filename.to_str().unwrap(),
-                path,
-                e
-            );
-            Err(format_err!("failed to read from output file"))
-        }
-    };
-    remove_file(filename).context("failed to delete youtube-dl file")?;
-    res
 }
