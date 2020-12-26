@@ -3,7 +3,9 @@ pub(crate) mod internal;
 pub mod proto;
 
 use std::convert::TryFrom;
+use std::fs::{metadata, remove_file, File};
 use std::net::SocketAddr;
+use std::path::Path;
 use std::sync::Arc;
 
 use proto::*;
@@ -103,9 +105,10 @@ async fn accept_connection(mut eq: JobEnqueuer, stream: TcpStream) -> Result<()>
             Ok(o) => o,
         })
         .map(|v| match TranscodeReq::try_from(v) {
-            Ok(v) => v
-                .req
-                .ok_or_else(|| format_err!("missing transcode request message")),
+            Ok(v) => match &v.req {
+                None => Err(format_err!("missing transcode request message: {:?}", v)),
+                Some(_) => Ok(v.req.unwrap()),
+            },
             Err(v) => Err(v),
         });
     let mut tx = tx.with(|resp| futures::future::ok::<_, Error>(Into::<Message>::into(resp)));
@@ -125,6 +128,11 @@ async fn accept_connection(mut eq: JobEnqueuer, stream: TcpStream) -> Result<()>
             },
             Err(e) => {
                 warn!("{} -> error on connection: {}", addr, e);
+                tx.send(TranscodeRespMessage::Error(format!(
+                    "protocol error: {}",
+                    e
+                )))
+                .await?;
                 continue;
             }
         };
@@ -351,8 +359,10 @@ async fn youtube_dl_download<S: AsRef<std::ffi::OsStr> + Clone>(url: S) -> Resul
         );
     }
 
+    // this may not actually exist, sometimes it writes to mkv :/
     let filename = std::str::from_utf8(&filename_output.stdout)?.trim();
     info!("filename: {}", filename);
+    let mut filename = Path::new(filename).to_owned();
 
     let child = youtube_dl(url, Option::<Vec<S>>::None)
         .args(&["-q", "-o"])
@@ -366,13 +376,32 @@ async fn youtube_dl_download<S: AsRef<std::ffi::OsStr> + Clone>(url: S) -> Resul
         .await
         .map_err(|e| format_err!("failed to run youtube-dl and get output: {}", e))?;
 
+    // XXX: mp4 is frequently returned but on merging it writes to mkv. Why?
+    if !filename.is_file() {
+        let filestr = format!(
+            "{}.mkv",
+            filename
+                .file_stem()
+                .ok_or_else(|| {
+                    format_err!(
+                        "youtube-dl wrote to unknown file. Expected {} with mkv or templated extension. Files are leaking",
+                        filename.to_str().unwrap(),
+                    )
+                })?
+                .to_str()
+                .unwrap()
+        );
+        filename = filename.parent().unwrap().join(Path::new(filestr.as_str()));
+    }
+
     if !output.status.success() {
-        return Err(format_err!(
+        warn!(
             "non-zero exit status ({}) from youtube-dl download:\n{}\n{}\n",
             output.status,
             std::str::from_utf8(&output.stderr)?,
             std::str::from_utf8(&output.stdout)?,
-        ));
+        );
+        return Err(format_err!("youtube-dl errored",));
     }
 
     let res = match tokio::fs::read(&filename).await {
@@ -380,13 +409,16 @@ async fn youtube_dl_download<S: AsRef<std::ffi::OsStr> + Clone>(url: S) -> Resul
             debug!("read {} bytes", v.len());
             Ok(v)
         }
-        std::result::Result::Err(e) => Err(format_err!(
-            "failed to read from youtube-dl output file \"{}\" (from {}): {}",
-            filename,
-            path,
-            e,
-        ))?,
+        std::result::Result::Err(e) => {
+            warn!(
+                "failed to read from youtube-dl output file: \"{}\" (from {}): {}",
+                filename.to_str().unwrap(),
+                path,
+                e
+            );
+            Err(format_err!("failed to read from output file"))
+        }
     };
-    std::fs::remove_file(filename).unwrap();
+    remove_file(filename).context("failed to delete youtube-dl file")?;
     res
 }

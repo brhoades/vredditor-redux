@@ -1,2 +1,7 @@
 rs/target
+ts/node_modules
+ts/src/pb
+ts/src/google
+ts/src/main.ts
+ts/build
 

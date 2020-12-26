@@ -28,7 +28,7 @@ macro_rules! assert_status {
 }
 
 #[tokio::test]
-async fn test_client() -> Result<()> {
+async fn test_happy_path() -> Result<()> {
     let addr = "localhost:50023";
 
     // we cancel by returning an error from any ne of these
