@@ -323,12 +323,16 @@ async fn process_job(mut job: Job) {
     };
 }
 
+// XXX: move to a setting
+static BUCKET: &'static str = "i.brod.es";
+static ACL: &'static str = "public-read";
+
 async fn handle_job(job: &mut Job) -> Result<String> {
     let clients: Clients = Default::default();
     let uploader: s3::S3Uploader<bytes::BytesMut, file::TempFileStream> =
         s3::S3Uploader::<bytes::BytesMut, file::TempFileStream>::default()
-            // XXX: move to a setting
-            .bucket("i.brod.es")
+            .bucket(BUCKET)
+            .acl(ACL)
             .clone();
 
     let url = &job.url;
@@ -343,7 +347,7 @@ async fn handle_job(job: &mut Job) -> Result<String> {
             .unwrap_or_else(|_| format!(
                 "[couldn't query bytes for {} in {}]",
                 url,
-                file.filename()
+                file.filename().unwrap_or("unknown".to_owned())
             ))
     );
     job.set_state_if_eq(
@@ -351,17 +355,17 @@ async fn handle_job(job: &mut Job) -> Result<String> {
         Some(JobState::Processing(Default::default())),
     )
     .await;
-    let stream = file.stream().await.context("failed to get file stream")?;
 
     let mut uploader = uploader.clone();
+    let filename = format!("{}.{}", file.filename()?, "mp4");
     uploader
-        .filename(format!("{}.{}", file.filename(), "mp4"))
-        // XXX: error handling
-        .data(stream);
+        .filename(&filename)
+        .content_length(file.len().await.context("len for upload to s3")? as i64)
+        .data(file.stream().await.context("failed to get file stream")?);
+
     uploader
         .upload(s3_client)
         .await
-        .with_context(|| format!("failed to upload file from {} to s3", job.url))?;
-
-    Ok(format!("https://i.brod.es/{}", file.filename()))
+        .map(|_| format!("https://{}/{}", BUCKET, filename))
+        .with_context(|| format!("failed to upload file from {} to s3", job.url))
 }

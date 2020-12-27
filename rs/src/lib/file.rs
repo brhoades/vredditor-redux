@@ -11,8 +11,8 @@ use crate::internal::*;
 // happy path cases
 #[derive(Debug)]
 pub struct GuardedTempFile {
-    name: PathBuf,
-    namestr: String,
+    path: PathBuf,
+    pathstr: String,
     f: File,
 }
 
@@ -21,34 +21,46 @@ pub type TempFileStream = FramedRead<File, BytesCodec>;
 #[allow(dead_code)]
 impl GuardedTempFile {
     pub async fn new() -> Result<Self> {
-        let name = temp_dir().join(random_id());
+        let path = temp_dir().join(random_id());
 
-        let namestr = name.clone();
-        let namestr = namestr
+        let pathstr = path.clone();
+        let pathstr = pathstr
             .to_str()
             .ok_or_else(|| {
                 format_err!(
                     "failed to convert random file pathbuf to string: {:?}",
-                    name
+                    pathstr
                 )
             })?
             .to_string();
 
         Ok(Self {
-            f: File::create(&name)
+            f: File::create(&path)
                 .await
                 .context("creating temporary named file")?,
-            namestr,
-            name,
+            pathstr,
+            path,
         })
     }
 
-    pub fn filename(&self) -> &str {
-        self.namestr.as_str()
+    pub fn pathstr(&self) -> &str {
+        self.pathstr.as_str()
+    }
+
+    pub fn path_string(&self) -> String {
+        self.pathstr.clone()
     }
 
     pub fn path(&self) -> &PathBuf {
-        &self.name
+        &self.path
+    }
+
+    pub fn filename(&self) -> Result<String> {
+        self.path
+            .file_name()
+            .and_then(|filename| filename.to_str())
+            .map(str::to_owned)
+            .ok_or_else(|| format_err!("failed to get file name from path: {}", self.pathstr()))
     }
 
     pub fn file(&mut self) -> &File {
@@ -67,6 +79,12 @@ impl GuardedTempFile {
         self.f.metadata().await.ah().map(|f| f.len())
     }
 
+    // reopens this file in place without deleting it
+    pub async fn reopen(&mut self) -> Result<()> {
+        self.f = File::open(&self.path).await?;
+        Ok(())
+    }
+
     pub async fn stream(&mut self) -> Result<FramedRead<File, BytesCodec>> {
         // XXX: this clone doesn't seem ideal. Maybe we should return a guarded framedread?
         self.f
@@ -79,11 +97,11 @@ impl GuardedTempFile {
 
 impl Drop for GuardedTempFile {
     fn drop(&mut self) {
-        let err = remove_file(self.name.clone());
+        let err = remove_file(self.path.clone());
 
         trace!(
             "deleted on drop: {} ({})",
-            self.namestr,
+            self.pathstr(),
             err.err()
                 .map(|e| e.to_string())
                 .unwrap_or_else(|| "OK".to_owned())

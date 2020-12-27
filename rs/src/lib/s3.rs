@@ -20,18 +20,20 @@ where
 
     /// Target bucket to upload to.
     pub bucket: Option<String>,
-    /*
-    // copied from S3PutObjectRequest
+
+    /// Size of the body in bytes. Since we're streaming, we must specify the size ahead of time.
+    pub content_length: Option<i64>,
+
     /// The canned ACL to apply to the object.
     pub acl: Option<String>,
+    /*
+    // copied from S3PutObjectRequest
     /// Specifies caching behavior along the request/reply chain.
     pub cache_control: Option<String>,
     /// Specifies what content encodings have been applied to the object and thus what decoding mechanisms must be applied to obtain the media-type referenced by the Content-Type header field.
     pub content_encoding: Option<String>,
     /// The language the content is in.
     pub content_language: Option<String>,
-    /// Size of the body in bytes. This parameter is useful when the size of the body cannot be determined automatically.
-    pub content_length: Option<i64>,
     /// The base64-encoded 128-bit MD5 digest of the part data. This parameter is auto-populated when using the command from the CLI. This parameted is required if object lock parameters are specified.
     pub content_md5: Option<String>,
     /// A standard MIME type describing the format of the object data.
@@ -51,7 +53,7 @@ where
     */
 }
 
-/// Clones the static settings (bucket) of the builder, but not the filename nor data.
+/// Clones the static settings (bucket, acl) of the builder, but not the file details.
 impl<B, T> Clone for S3Uploader<B, T>
 where
     B: Into<Bytes>,
@@ -60,8 +62,10 @@ where
     fn clone(&self) -> Self {
         Self {
             bucket: self.bucket.clone(),
+            acl: self.acl.clone(),
             filename: None,
             data: None,
+            content_length: None,
         }
     }
 }
@@ -76,6 +80,8 @@ where
             filename: None,
             bucket: None,
             data: None,
+            content_length: None,
+            acl: None,
         }
     }
 }
@@ -101,6 +107,16 @@ where
         self
     }
 
+    pub fn content_length(&mut self, size: i64) -> &mut Self {
+        self.content_length = Some(size);
+        self
+    }
+
+    pub fn acl<F: ToString>(&mut self, acl: F) -> &mut Self {
+        self.acl = Some(acl.to_string());
+        self
+    }
+
     pub fn build(self) -> Result<PutObjectRequest> {
         let body = rusoto_core::ByteStream::new(
             // compat must be external to any map, since a .map on a stream will expect the
@@ -118,6 +134,11 @@ where
             bucket: self
                 .bucket
                 .ok_or_else(|| format_err!("bucket is required but missing"))?,
+            acl: self.acl,
+            content_length: Some(
+                self.content_length
+                    .ok_or_else(|| format_err!("content_length is required but missing"))?,
+            ),
             body: Some(body),
             ..PutObjectRequest::default()
         })
