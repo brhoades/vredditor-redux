@@ -1,9 +1,11 @@
 use std::collections::HashMap;
+use std::convert::TryInto;
 use std::time::Duration;
 
+use hyper::{body::HttpBody, Client, Uri};
 use serde::Deserialize;
 use serde_json::Value as JSONValue;
-use tokio::{io::AsyncWriteExt, process::Command, stream::StreamExt, try_join};
+use tokio::{io::AsyncWriteExt, process::Command, try_join};
 
 use crate::{file::GuardedTempFile, internal::*};
 
@@ -186,21 +188,35 @@ pub async fn youtube_dl_download<'b, S: AsRef<str>, B: AsRef<str>>(
     merge_audio_video(video, audio).await.with_context(ctx)
 }
 
-async fn download_to_tempfile<U: reqwest::IntoUrl>(url: U) -> Result<GuardedTempFile> {
-    let url = url.into_url()?;
-    let urlstr = url.as_str();
-    let ctx = || format!("for a request to {}", urlstr);
+async fn download_to_tempfile<U>(url: U) -> Result<GuardedTempFile>
+where
+    U: TryInto<Uri> + ToString,
+    U::Error: Send + std::error::Error + Sync + 'static,
+{
+    let urlstr = url.to_string();
+    let ctx = || format!("for a request to {}", &urlstr);
+    let url = url.try_into().with_context(ctx)?;
 
-    let resp = reqwest::Client::new()
-        .get(url.clone())
-        .send()
-        .await
-        .and_then(|resp| resp.error_for_status())
-        .with_context(ctx)?;
+    // XXX: After tokio 1.0 migration, move back to reqwest.
+    let client = Client::builder()
+        .build::<_, hyper::Body>(hyper_rustls::HttpsConnector::with_native_roots());
+    let mut resp = client.get(url).await.with_context(ctx)?;
+    ensure!(
+        resp.status().is_success(),
+        "failed to download to tempfile. request failed for: {}",
+        urlstr
+    );
+
     let mut file = GuardedTempFile::new().with_context(ctx)?;
 
-    let mut stream = resp.bytes_stream();
-    while let Some(chunk) = stream.next().await.transpose().with_context(ctx)? {
+    while let Some(chunk) = resp
+        .body_mut()
+        .data()
+        .await
+        .transpose()
+        .context("when retrieving next chunk")
+        .with_context(ctx)?
+    {
         file.file_mut()
             .write_all(chunk.as_ref())
             .await
