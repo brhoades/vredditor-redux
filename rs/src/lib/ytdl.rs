@@ -1,9 +1,8 @@
-use std::{collections::HashMap, ffi::OsStr, fs::remove_file, path::Path, process::Stdio};
+use std::time::Duration;
 
-use reqwest::IntoUrl;
 use serde::Deserialize;
-use serde_json::Value as JSONValue;
-use tokio::{fs, io::AsyncWriteExt, process::Command, stream::StreamExt};
+// use serde_json::Value as JSONValue;
+use tokio::{io::AsyncWriteExt, process::Command, stream::StreamExt, try_join};
 
 use crate::{file::GuardedTempFile, internal::*};
 
@@ -16,12 +15,13 @@ prefer <= 1080p, <50M
 // builds a youtubedl command which outputs json with preset format specifiers
 fn youtube_dl(url: &str) -> Box<Command> {
     let mut cmd = Box::new(Command::new("youtube-dl"));
-    cmd.args(&[
+    cmd.kill_on_drop(true).args(&[
         "-f",
         "(bestaudio+bestvideo/best)[height<=1080]/best[filesize<50M]",
         "--restrict-filenames",
         "--maxsize",
         "100M",
+        url,
     ]);
 
     cmd
@@ -129,20 +129,10 @@ pub async fn youtube_dl_download<'b, S: AsRef<str>, B: AsRef<str>>(
     args: Option<&'b [B]>,
 ) -> Result<GuardedTempFile> {
     let url = url.as_ref();
+    let ctx = || format!("for downloading url {}", url);
 
     // get info to retrieve target formats
-    let mut info = youtube_dl_info(url, args).await?;
-    let mut target_fmts = &mut info.format_id.split("+");
-    let (audio_format, video_format) = match (target_fmts.next(), target_fmts.next()) {
-        (Some(afmt), Some(vfmt)) => (afmt, vfmt),
-        other => {
-            error!("unknown video format specifier returned. only audio? only video?");
-            error!("format: {} for url: {}", info.format_id, url);
-            bail!("unknown video format specifier: {:?}", other);
-        }
-    };
-
-    // get target formats
+    let info = youtube_dl_info(url, args).await?;
     let (video_format, audio_format) = match info.chosen_format() {
         (Some(v), Some(a)) => (v, a),
         (v, a) => {
@@ -156,36 +146,101 @@ pub async fn youtube_dl_download<'b, S: AsRef<str>, B: AsRef<str>>(
     };
 
     // get their URLs.
+    let (mut video, mut audio) = try_join!(
+        download_to_tempfile(&video_format.url),
+        download_to_tempfile(&audio_format.url)
+    )
+    .with_context(ctx)?;
+    let (videofn, audiofn) = (video.filename().to_string(), audio.filename().to_string());
 
-    let video = crate::file::GuardedTempFile::new()?;
-    debug!("video path: {}", video.filename());
+    debug!(
+        "video: {} with {} bytes",
+        videofn,
+        video
+            .len()
+            .await
+            .with_context(ctx)
+            .context("downloaded video")?
+    );
+    debug!(
+        "audio: {} with {} bytes",
+        audiofn,
+        audio
+            .len()
+            .await
+            .with_context(ctx)
+            .context("downloaded audio")?
+    );
 
-    download_to_tempfile(&video_format.url).await
+    merge_audio_video(video, audio).await.with_context(ctx)
 }
 
 async fn download_to_tempfile<U: reqwest::IntoUrl>(url: U) -> Result<GuardedTempFile> {
     let url = url.into_url()?;
     let urlstr = url.as_str();
+    let ctx = || format!("for a request to {}", urlstr);
+
     let resp = reqwest::Client::new()
         .get(url.clone())
         .send()
         .await
         .and_then(|resp| resp.error_for_status())
-        .with_context(|| format!("making request to {}", urlstr))?;
-    let mut file = GuardedTempFile::new().with_context(|| format!("for request to {}", urlstr))?;
+        .with_context(ctx)?;
+    let mut file = GuardedTempFile::new().with_context(ctx)?;
 
     let mut stream = resp.bytes_stream();
-    while let Some(chunk) = stream
-        .next()
-        .await
-        .transpose()
-        .context("while downloading to a tempfile")?
-    {
+    while let Some(chunk) = stream.next().await.transpose().with_context(ctx)? {
         file.file_mut()
             .write_all(chunk.as_ref())
             .await
-            .context("failed to write stream chunk to temp file")?
+            .with_context(ctx)?
     }
 
     Ok(file)
+}
+
+// Consumes (and deletes) passed files. Runs ffmpeg on both to combine them
+// into a single file, then returns it.
+async fn merge_audio_video(
+    video: GuardedTempFile,
+    audio: GuardedTempFile,
+) -> Result<GuardedTempFile> {
+    let vfn = video.filename();
+    let afn = audio.filename();
+    let mut mergefile = GuardedTempFile::new()?;
+
+    let child = Command::new("ffmpeg")
+        .kill_on_drop(true)
+        .args(&[
+            "-i", vfn, "-i", afn, "-c:v", "copy", "-c:a", "aac", "-f", "mp4", "-",
+        ])
+        .spawn()
+        .context("failed to spawn ffmpeg subprocess")?;
+
+    // XXX: does streaming to a file wait for the child to finish outputting complete? I assume so.
+    let mut stdout = child
+        .stdout
+        .ok_or_else(|| format_err!("failed to get stdout handle for child ffmpeg"))?;
+
+    // timeout after 3 minutes, running ffmpeg until it terminates or we finish copying stdout to our file
+    let (res, _) = tokio::join! {
+        tokio::io::copy(&mut stdout, mergefile.file_mut()),
+        /*
+        status = child.wait() => {
+            ensure!(
+                !status?.success(),
+                "failed to transcode:\n{}",
+                std::str::from_utf8(child.output()?.stdout.as_slice().unwrap_or("[failed to interpret stderr for ffmpeg]")
+            );
+
+        },
+        */
+        tokio::time::sleep(Duration::from_secs(60 * 3)),
+    };
+
+    // warn!("ffmpeg child timeout");
+    // Err(format_err!("ffmpeg child timed out"))
+    // child.kill().await?;
+
+    Ok(res.map(|_| mergefile)?)
 }

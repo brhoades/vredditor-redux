@@ -40,7 +40,7 @@ impl GuardedTempFile {
     }
 
     pub fn filename(&self) -> &str {
-        &self.namestr
+        self.namestr.as_str()
     }
 
     pub fn path(&self) -> &PathBuf {
@@ -53,6 +53,14 @@ impl GuardedTempFile {
 
     pub fn file_mut(&mut self) -> &mut File {
         &mut self.f
+    }
+
+    pub async fn metadata(&mut self) -> Result<std::fs::Metadata> {
+        self.f.metadata().await.ah()
+    }
+
+    pub async fn len(&mut self) -> Result<u64> {
+        self.f.metadata().await.ah().map(|f| f.len())
     }
 }
 

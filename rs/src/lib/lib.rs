@@ -1,3 +1,5 @@
+#![feature(async_closure)]
+
 mod file;
 pub(crate) mod internal;
 pub mod proto;
@@ -6,7 +8,6 @@ pub mod ytdl;
 
 use std::convert::TryFrom;
 use std::net::SocketAddr;
-use std::path::Path;
 use std::sync::Arc;
 
 use proto::*;
