@@ -2,9 +2,10 @@ use std::collections::HashMap;
 use std::process::Stdio;
 use std::time::Duration;
 
+use futures::StreamExt;
 use serde::Deserialize;
 use serde_json::Value as JSONValue;
-use tokio::{io::AsyncWriteExt, process::Command, stream::StreamExt, try_join};
+use tokio::{io::AsyncWriteExt, process::Command, try_join};
 use tokio_compat_02::FutureExt;
 
 use crate::{file::GuardedTempFile, internal::*};

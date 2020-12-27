@@ -1,7 +1,8 @@
+use async_trait::async_trait;
 use bytes::Bytes;
 use futures::{Stream, StreamExt};
 use rusoto_s3::{PutObjectRequest, S3};
-use async_trait::async_trait;
+use tokio_compat_02::FutureExt;
 
 use crate::internal::*;
 
@@ -102,9 +103,13 @@ where
 
     pub fn build(self) -> Result<PutObjectRequest> {
         let body = rusoto_core::ByteStream::new(
-            self.data
-                .ok_or_else(|| format_err!("data is required but missing"))?
-                .map(|b| b.map(Into::into)),
+            // compat must be external to any map, since a .map on a stream will expect the
+            // newer tokio runtime and panic
+            tokio_compat_02::IoCompat::new(
+                self.data
+                    .ok_or_else(|| format_err!("data is required but missing"))?,
+            )
+            .map(|b| b.map(Into::into)),
         );
         Ok(PutObjectRequest {
             key: self
@@ -119,8 +124,10 @@ where
     }
 
     // alternatively, to upload directly.
-    pub async fn upload<C: std::borrow::Borrow<S>, S: S3Put>(self, c: C) -> Result<()> {
-        Ok(c.borrow().upload_object(self.build()?).await?)
+    pub async fn upload<C: S3Put>(self, c: &C) -> Result<()> {
+        Ok(c.upload_object(self.build()?)
+            .compat() // XXX: remove with rusoto on tokio 0.3+
+            .await?)
     }
 }
 
@@ -135,7 +142,6 @@ where
     T: S3 + Send + Sync,
 {
     async fn upload_object(&self, obj: PutObjectRequest) -> Result<()> {
-        self.put_object(obj).await?;
-        Ok(())
+        self.put_object(obj).compat().await.ah().map(|_| ()) // XXX: remove with rusoto on tokio 0.3+
     }
 }

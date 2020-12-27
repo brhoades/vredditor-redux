@@ -1,8 +1,7 @@
 use std::{env::temp_dir, fs::remove_file, iter, path::PathBuf};
 
-use bytes::BytesMut;
 use rand::{distributions, thread_rng, Rng};
-use tokio::{fs::File, io::AsyncRead};
+use tokio::fs::File;
 use tokio_util::codec::{BytesCodec, FramedRead};
 
 use crate::internal::*;

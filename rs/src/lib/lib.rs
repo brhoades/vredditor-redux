@@ -245,11 +245,12 @@ impl JobQueue {
     }
 
     // XXX: runs single threaded, maybe it shouldn't? A few pooled runners makes sense.
-    pub async fn run(self) -> Result<()> {
-        let mut stream = self.rx.map(process_job);
+    pub async fn run(mut self) -> Result<()> {
+        // XXX: this doesn't work after tokio 1.0 as receviers are no longer streams?
+        // use tokio_stream::StreamExt;
 
-        while let Some(res) = stream.next().await {
-            println!("job processed: {:?}", res.await);
+        while let Some(res) = self.rx.recv().await {
+            println!("job processed: {:?}", process_job(res).await);
         }
 
         Ok(())
@@ -285,13 +286,12 @@ impl JobEnqueuer {
 }
 
 async fn process_job(mut job: Job) {
-    lazy_static::lazy_static! {
-        static ref CLIENTS: Clients = Default::default();
-    }
-
-    let uploader = s3::S3Uploader::<bytes::BytesMut, file::TempFileStream>::default()
-        // XXX: move to a setting
-        .bucket("i.brod.es");
+    let clients: Clients = Default::default();
+    let uploader: s3::S3Uploader<bytes::BytesMut, file::TempFileStream> =
+        s3::S3Uploader::<bytes::BytesMut, file::TempFileStream>::default()
+            // XXX: move to a setting
+            .bucket("i.brod.es")
+            .clone();
 
     if !job
         .set_state_if_eq(
@@ -304,7 +304,7 @@ async fn process_job(mut job: Job) {
     }
 
     let url = &job.url;
-    let file = match ytdl::youtube_dl_download(&CLIENTS, url, Option::<&[&str]>::None).await {
+    let mut file = match ytdl::youtube_dl_download(&clients, url, Option::<&[&str]>::None).await {
         Ok(mut file) => {
             info!(
                 "downloaded {} bytes",
@@ -345,4 +345,14 @@ async fn process_job(mut job: Job) {
             return;
         }
     };
+
+    let stream = file.stream().await.unwrap();
+    let s3_client: &S3Client = &clients.s3_client;
+
+    let mut uploader = uploader.clone();
+    uploader
+        .filename(format!("{}.{}", file.filename(), "mp4"))
+        // XXX: error handling
+        .data(stream);
+    uploader.upload(s3_client).await.unwrap();
 }
