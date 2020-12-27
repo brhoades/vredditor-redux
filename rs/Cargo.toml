@@ -16,12 +16,13 @@ anyhow = "1.0"
 rusoto_core = "0.45.0"
 rusoto_s3 = "0.45.0"
 bytes = "=0.5"
-reqwest = { version = "0.10", features = ["stream"] }
+hyper = "0.14"
 
 serde = "1.0"
 serde_json = "1.0"
 
-tokio = { version = "=0.3.6", default-features = false, features = ["rt-multi-thread", "macros", "sync", "net", "io-util", "time", "process", "fs"] }
+# tokio = { version = "=0.3.6", default-features = false, features = ["rt-multi-thread", "macros", "sync", "net", "io-util", "time", "process", "fs"] }
+tokio = { version = "=0.3.6", default-features = false, features = ["full"] }
 # pins pin-project to 0.2.0, which makes tokio-tungstenite play nice
 websocket-codec = "=0.4.0"
 tokio-tungstenite = { version = "0.12", features = ["connect", "stream"] }
