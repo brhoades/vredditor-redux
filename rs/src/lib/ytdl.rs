@@ -59,7 +59,7 @@ struct YTFormat {
     #[serde(alias = "format_id")]
     id: String,
     #[serde(alias = "format_note")]
-    note: String,
+    note: Option<String>,
 
     url: String,
     filesize: Option<usize>,
@@ -134,7 +134,11 @@ async fn youtube_dl_info<'a, S: AsRef<str>, A: AsRef<str>>(
 
     std::str::from_utf8(res.stdout.as_slice())
         .ah()
-        .and_then(|s| serde_json::from_str(s.trim()).ah())
+        .and_then(|s| {
+            serde_json::from_str(s.trim())
+                .ah()
+                .with_context(|| format!("when parsing: {}", s.trim()))
+        })
         .with_context(|| format!("parsing stdout from youtube-dl for {}", url))
 }
 

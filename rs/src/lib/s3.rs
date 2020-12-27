@@ -146,6 +146,13 @@ where
 
     // alternatively, to upload directly.
     pub async fn upload<C: S3Put>(self, c: &C) -> Result<()> {
+        if let Some(_) = option_env!("FAKE_S3") {
+            warn!("faking an s3 upload");
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+            debug!("fake upload complete");
+            return Ok(());
+        }
+
         Ok(c.upload_object(self.build()?)
             .compat() // XXX: remove with rusoto on tokio 0.3+
             .await?)

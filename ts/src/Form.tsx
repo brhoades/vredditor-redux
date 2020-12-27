@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Form as FinalForm, Field, FormRenderProps } from 'react-final-form';
 import { FORM_ERROR } from 'final-form';
 
@@ -24,9 +24,9 @@ type ErrorValues = Partial<Values> & {
   [FORM_ERROR]?: string;
 };
 
-const onSubmit = (setURLs: (urls: string[]) => void) => ({ url, rehost, resolveOnFirst }: Values): Promise<ErrorValues> => (
+const onSubmit = (statusCb: (status: string) => void, setURLs: (urls: string[]) => void) => ({ url, rehost, resolveOnFirst }: Values): Promise<ErrorValues> => (
   new Promise((resolve) => {
-    getURLs(url, { rehost, resolveOnFirst })
+    getURLs(statusCb, url, { rehost, resolveOnFirst })
       .then((urls) => {
         setURLs(urls);
         resolve();
@@ -48,7 +48,8 @@ const URLForm = ({
   error,
   submitError,
   submitErrors,
-}: FormRenderProps<Values>) => {
+  status,
+}: { status: string } & FormRenderProps<Values>) => {
   const formError = submitError || error;
   const serverError = submitErrors !== undefined && submitErrors[FORM_ERROR] !== undefined;
   // Allow server errors (submitError) to retry without changes.
@@ -82,7 +83,7 @@ const URLForm = ({
           <Field
             component={FormCheck}
             name="rehost"
-            label="Rehost the video. Please use if other options do not work (e.g. audio is missing)."
+            label="Rehost the video."
           />
         </Form.Group>
 
@@ -92,7 +93,7 @@ const URLForm = ({
             type="submit"
             message="Convert"
             loading={submitting}
-            loadingMessage="Converting..."
+            loadingMessage={status ? `${status}...` : "Starting..."}
             disabled={submitting || pristine || (invalid && disabledFromUserError)}
           />
         </Col>
@@ -119,11 +120,16 @@ const validate = ({ url, ...rem }: Values): ErrorValues => {
   return {};
 };
 
-export default ({ setURLs }: { setURLs: (urls: string[]) => void }) => (
-  <FinalForm
-    onSubmit={onSubmit(setURLs)}
-    validate={validate}
-    render={URLForm}
-    initialValues={{ resolveOnFirst: true }}
-  />
-);
+export default ({ setURLs }: { setURLs: (urls: string[]) => void }) => {
+  // surely there's a better spot for this
+  const [status, setStatus] = useState("");
+
+  return (
+    <FinalForm
+      onSubmit={onSubmit(setStatus, setURLs)}
+      validate={validate}
+      render={(props: FormRenderProps<Values>) => (<URLForm status={status} {...(props as any)} />)}
+      initialValues={{ resolveOnFirst: true }}
+    />
+  )
+};

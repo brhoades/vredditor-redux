@@ -43,16 +43,19 @@ export const getURLsFromMPD = (xml: string): string[] => {
   ).map(({ nodeValue }) => nodeValue);
 };
 
-const getVRedditFromUser = (url: string): Promise<string> => (
+const getVRedditFromUser = (statusCb: (status: string) => void, url: string): Promise<string> => (
   new Promise((resolve, reject) => {
     if (/v\.redd\.it\/([A-Za-z0-9]+)/.test(url)) {
+      statusCb("Scanning reddit");
       resolve(url);
     } else if (/(m|old)?\.?reddit\.com\/r\/.*?\/comments/.test(url)) {
+      statusCb("Fetching thread");
       // comments link
       getVRedditFromComments(url)
         .then(resolve)
         .catch(reject);
     } else {
+      statusCb("Failed");
       reject(new Error('Couldn\'t get a reddit link from that. Please email me@brod.es if this is a valid reddit link.'));
     }
   })
@@ -61,13 +64,13 @@ const getVRedditFromUser = (url: string): Promise<string> => (
 const server = "ws://127.0.0.1:8080";
 let connection: VRWebSocket | null = null;
 
-const wsForURL = (url: string): Promise<string> => new Promise((resolve, reject) => {
+const wsForURL = (statusCb: (status: string) => void, url: string): Promise<string> => new Promise((resolve, reject) => {
+  statusCb("Connecting");
+
   if (connection === null) {
-    console.log("connection is not open, connectiong...");
     connection = new VRWebSocket(server);
     connection.onopen = () => {
-      console.log("connection opened, recursing");
-      wsForURL(url).then(resolve).catch(reject);
+      wsForURL(statusCb, url).then(resolve).catch(reject);
     };
     connection.onclose = () => { connection = null; reject("connection with server closed"); };
     return;
@@ -79,9 +82,11 @@ const wsForURL = (url: string): Promise<string> => new Promise((resolve, reject)
         const accept = resp.accepted;
 
         if (accept?.resultInner?.$case === "ok") {
-          return wsStartDownload(url, resolve, reject);
+          statusCb("Requesting");
+          return wsStartDownload(statusCb, url, resolve, reject);
         } else if (accept?.resultInner?.$case === "err") {
-          return reject(`server rejected handshake: ${proto.Result.toJSON(accept)}`);
+          statusCb("Server declined");
+          return reject(`server rejected handshake: ${accept?.resultInner?.err}`);
         }
       }
 
@@ -89,12 +94,11 @@ const wsForURL = (url: string): Promise<string> => new Promise((resolve, reject)
     }).catch(reject);
   };
 
+  statusCb("Checking permission");
   connection.send(NewRequest.handshake());
-
-  console.log("sent handshake after registering listener");
 });
 
-const wsStartDownload = (url: string, rawResolve: (_: string) => void, rawReject: (_: string) => void) => {
+const wsStartDownload = (statusCb: (status: string) => void, url: string, rawResolve: (_: string) => void, rawReject: (_: string) => void) => {
   let gotStatus = false; // debounce
   let done = false;
   const resolve = (s: string) => {
@@ -108,52 +112,65 @@ const wsStartDownload = (url: string, rawResolve: (_: string) => void, rawReject
 
   if (connection === null) {
     console.error("connection closed");
-    return rawReject("connection was closed");
+    statusCb("Server hung up");
+    return reject("connection was closed");
   }
 
   connection.onmessage = (msg) => (
     parseResponse(msg.data).then(({ resp }) => {
       if (resp === undefined) {
-        return reject('response had no resp field');
+        statusCb("Server communication failure");
+        return reject('response had an invalid response');
       }
 
       console.log(`server message: ${resp}`);
       if (resp?.$case !== "jobStatus") {
+        statusCb("Server communication failure");
         return reject(`unexpected message type, expected state: ${msg}`);
       }
       const { state } = resp.jobStatus;
 
       if (!state) {
+        statusCb("Server communication failure");
         return reject(`unexpected message type, expected state: ${msg}`);
       }
       const stateTy = state?.$case;
 
       if (stateTy === "queued") {
+        statusCb("Queueing");
         console.log("file queued");
       } else if (state?.$case === "completed") {
         const inner = state?.completed?.resultInner;
         switch (inner?.$case) {
           case "ok":
             console.log(`file COMPLETE: ${JSON.stringify(inner)}`);
+            statusCb("Completed");
             return resolve(inner.ok);
           case "err":
+            statusCb("Errored");
             console.log(`file failed: ${JSON.stringify(inner)}`);
             return reject(inner.err);
           default:
             return reject(`unknown result state for completed file from server: ${inner}`);
         }
       } else if (stateTy === "processing") {
+        statusCb("Processing");
         console.log("file PROCESSING");
       } else if (stateTy === "cancelled") {
+        statusCb("Cancelled");
         console.log("file cancelled");
         return reject("operation was cancelled");
       } else if (stateTy === "uploading") {
+        statusCb("Uploading");
         console.log("file UPLOADING");
       } else if (stateTy === "noJobs") {
+        statusCb("No jobs");
         console.log("no file queued");
       } else if (stateTy === "unknown") {
+        statusCb("Unknown");
         console.log("unknown file state");
       } else {
+        statusCb("Communication error");
         console.log(`unknown state message: ${state}`);
       }
 
@@ -182,12 +199,12 @@ const wsStartDownload = (url: string, rawResolve: (_: string) => void, rawReject
   console.log(`started download for URL: ${url}`);
 };
 
-export const getURLs = (url: string, opts: { rehost: boolean, resolveOnFirst: boolean } = { rehost: false, resolveOnFirst: false }): Promise<string[]> => (
+export const getURLs = (statusCb: (status: string) => void, url: string, opts: { rehost: boolean, resolveOnFirst: boolean } = { rehost: false, resolveOnFirst: false }): Promise<string[]> => (
   new Promise((resolve, reject) => (
     (
       opts.rehost
-        ? wsForURL(url)
-        : getVRedditFromUser(url)
+        ? wsForURL(statusCb, url)
+        : getVRedditFromUser(statusCb, url)
     ).then((url) => {
       // there is only one URL
       if (opts.rehost) {
@@ -207,15 +224,15 @@ export const getURLs = (url: string, opts: { rehost: boolean, resolveOnFirst: bo
         '360',
         '96',
       ];
-      const mp4Urls = qualities.map((quality) => `https://v.redd.it/${id}/DASH_${quality}.mp4`);
+      const mp4Urls = qualities.map((quality) => ({ name: `${quality} mp4`, url: `https://v.redd.it/${id}/DASH_${quality}.mp4` }));
       const urls = [
         ...mp4Urls,
-        ...qualities.map((quality) => `https://v.redd.it/${id}/DASH_${quality}`)
+        ...qualities.map((quality) => ({ name: `${quality} legacy`, url: `https://v.redd.it/${id}/DASH_${quality}`})),
       ];
 
       // dear lord, here we go
       const vid = document.createElement('video');
-      loadVideos(urls, [], vid, resolve, opts);
+      loadVideos(statusCb, urls, [], vid, resolve, opts);
     })
     .catch((err) => reject(err))
   ))
@@ -226,9 +243,10 @@ export const getURLs = (url: string, opts: { rehost: boolean, resolveOnFirst: bo
 //
 // If resolveOnFirst is true, we'll resolve on the first success with one URL. Otherwise,
 // we accumate URLs by walking all of urls before resolving.
-const loadVideos = (urls: string[], valid: string[], vid: HTMLVideoElement, resolve: (_: string[]) => void, opts: { resolveOnFirst: boolean }) => {
-  const [url, ...rem] = urls;
+const loadVideos = (statusCb: (status: string) => void, urls: { name: string, url: string}[], valid: string[], vid: HTMLVideoElement, resolve: (_: string[]) => void, opts: { resolveOnFirst: boolean }) => {
+  const [{ url, name }, ...rem] = urls;
   const once = { once: '' };
+  statusCb(`Checking ${name}`);
 
   const meta = (_e: Event) => {
     remove();
@@ -241,7 +259,7 @@ const loadVideos = (urls: string[], valid: string[], vid: HTMLVideoElement, reso
     }
 
     setTimeout(() => {
-      loadVideos(rem, newURLs, vid, resolve, opts);
+      loadVideos(statusCb, rem, newURLs, vid, resolve, opts);
     }, 500);
   };
 
@@ -260,7 +278,7 @@ const loadVideos = (urls: string[], valid: string[], vid: HTMLVideoElement, reso
         return;
       }
 
-      loadVideos(rem, valid, vid, resolve, opts);
+      loadVideos(statusCb, rem, valid, vid, resolve, opts);
     }, 500);
   };
 
