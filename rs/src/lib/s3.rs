@@ -9,7 +9,7 @@ use crate::internal::*;
 pub struct S3Uploader<B, T>
 where
     B: Into<Bytes>,
-    T: Stream<Item = B>,
+    T: Stream<Item = Result<B, std::io::Error>>,
 {
     /// Object data.
     pub data: Option<T>,
@@ -50,31 +50,31 @@ where
     */
 }
 
+/// Clones the static settings (bucket) of the builder, but not the filename nor data.
+impl<B, T> Clone for S3Uploader<B, T>
+where
+    B: Into<Bytes>,
+    T: Stream<Item = Result<B, std::io::Error>>,
+{
+    fn clone(&self) -> Self {
+        Self {
+            bucket: self.bucket.clone(),
+            filename: None,
+            data: None,
+        }
+    }
+}
+
 impl<B, T> Default for S3Uploader<B, T>
 where
     B: Into<Bytes>,
-    T: Stream<Item = B>,
+    T: Stream<Item = Result<B, std::io::Error>>,
 {
     fn default() -> Self {
         Self {
             filename: None,
             bucket: None,
             data: None,
-            /*
-            acl: None,
-            cache_control: None,
-            content_encoding: None,
-            content_language: None,
-            content_length: None,
-            content_md5: None,
-            content_type: None,
-            expires: None,
-            metadata: None,
-            grant_full_control: None,
-            grant_read: None,
-            storage_class: None,
-            tagging: None,
-            */
         }
     }
 }
@@ -83,28 +83,28 @@ where
 impl<B, T> S3Uploader<B, T>
 where
     B: Into<Bytes>,
-    T: Stream<Item = B> + StreamExt + Send + Sync + 'static,
+    T: Stream<Item = Result<B, std::io::Error>> + StreamExt + Send + Sync + 'static,
 {
-    fn bucket<K: ToString>(&mut self, bucket: K) -> &mut Self {
+    pub fn bucket<K: ToString>(&mut self, bucket: K) -> &mut Self {
         self.bucket = Some(bucket.to_string());
         self
     }
 
-    fn filename<F: ToString>(&mut self, filename: F) -> &mut Self {
+    pub fn filename<F: ToString>(&mut self, filename: F) -> &mut Self {
         self.filename = Some(filename.to_string());
         self
     }
 
-    fn data(&mut self, stream: T) -> &mut Self {
+    pub fn data(&mut self, stream: T) -> &mut Self {
         self.data = Some(stream);
         self
     }
 
-    fn build(self) -> Result<PutObjectRequest> {
+    pub fn build(self) -> Result<PutObjectRequest> {
         let body = rusoto_core::ByteStream::new(
             self.data
                 .ok_or_else(|| format_err!("data is required but missing"))?
-                .map(|b| Result::<_, std::io::Error>::Ok(b.into())),
+                .map(|b| b.map(Into::into)),
         );
         Ok(PutObjectRequest {
             key: self
@@ -119,7 +119,7 @@ where
     }
 
     // alternatively, to upload directly.
-    async fn upload<C: std::borrow::Borrow<S>, S: S3Put>(self, c: C) -> Result<()> {
+    pub async fn upload<C: std::borrow::Borrow<S>, S: S3Put>(self, c: C) -> Result<()> {
         Ok(c.borrow().upload_object(self.build()?).await?)
     }
 }

@@ -133,7 +133,8 @@ async fn youtube_dl_info<'a, S: AsRef<str>, A: AsRef<str>>(
         .with_context(|| format!("parsing stdout from youtube-dl for {}", url))
 }
 
-pub async fn youtube_dl_download<'b, S: AsRef<str>, B: AsRef<str>>(
+pub(crate) async fn youtube_dl_download<'b, S: AsRef<str>, B: AsRef<str>>(
+    clients: &Clients,
     url: S,
     args: Option<&'b [B]>,
 ) -> Result<GuardedTempFile> {
@@ -160,8 +161,8 @@ pub async fn youtube_dl_download<'b, S: AsRef<str>, B: AsRef<str>>(
 
     // get their URLs.
     let (mut video, mut audio) = try_join!(
-        download_to_tempfile(&video_format.url),
-        download_to_tempfile(&audio_format.url)
+        clients.download_to_tempfile(&video_format.url),
+        clients.download_to_tempfile(&audio_format.url)
     )
     .with_context(ctx)?;
     let (videofn, audiofn) = (video.filename().to_string(), audio.filename().to_string());
@@ -188,29 +189,32 @@ pub async fn youtube_dl_download<'b, S: AsRef<str>, B: AsRef<str>>(
     merge_audio_video(video, audio).await.with_context(ctx)
 }
 
-async fn download_to_tempfile<U: reqwest::IntoUrl>(url: U) -> Result<GuardedTempFile> {
-    let url = url.into_url()?;
-    let urlstr = url.as_str();
-    let ctx = || format!("for a request to {}", urlstr);
+impl Clients {
+    async fn download_to_tempfile<U: reqwest::IntoUrl>(&self, url: U) -> Result<GuardedTempFile> {
+        let url = url.into_url()?;
+        let urlstr = url.as_str();
+        let ctx = || format!("for a request to {}", urlstr);
 
-    let resp = reqwest::Client::new()
-        .get(url.clone())
-        .send()
-        .compat() // XXX: remove with reqwest on tokio 0.3+
-        .await
-        .and_then(|resp| resp.error_for_status())
-        .with_context(ctx)?;
-    let mut file = GuardedTempFile::new().with_context(ctx)?;
-
-    let mut stream = resp.bytes_stream();
-    while let Some(chunk) = stream.next().await.transpose().with_context(ctx)? {
-        file.file_mut()
-            .write_all(chunk.as_ref())
+        let resp: reqwest::Response = self
+            .http_client
+            .get(url.clone())
+            .send()
+            .compat() // XXX: remove with reqwest on tokio 0.3+
             .await
-            .with_context(ctx)?
-    }
+            .and_then(|resp| resp.error_for_status())
+            .with_context(ctx)?;
+        let mut file = GuardedTempFile::new().await.with_context(ctx)?;
 
-    Ok(file)
+        let mut stream = resp.bytes_stream();
+        while let Some(chunk) = stream.next().await.transpose().with_context(ctx)? {
+            file.file_mut()
+                .write_all(chunk.as_ref())
+                .await
+                .with_context(ctx)?
+        }
+
+        Ok(file)
+    }
 }
 
 // Consumes (and deletes) passed files. Runs ffmpeg on both to combine them
@@ -221,7 +225,7 @@ async fn merge_audio_video(
 ) -> Result<GuardedTempFile> {
     let vfn = video.filename();
     let afn = audio.filename();
-    let mergefile = GuardedTempFile::new()?;
+    let mergefile = GuardedTempFile::new().await?;
 
     let output = Command::new("ffmpeg")
         .kill_on_drop(true)

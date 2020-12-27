@@ -224,23 +224,27 @@ where
 }
 
 #[derive(Debug)]
-struct JobQueue {
+pub struct JobQueue {
     rx: mpsc::Receiver<Job>,
     tx: mpsc::Sender<Job>,
 }
 
 impl JobQueue {
+    // Builds a job queue with required dependencies to execute jobs:
+    //   Shared s3 client form the default AWS_REGION environment variable.
+    //   Shared reqwest client to use its connection pooling / http2 benefits.
     pub fn new() -> Self {
         let (tx, rx) = mpsc::channel::<Job>(100);
         JobQueue { tx, rx }
     }
 
-    pub fn enqueuer(&self) -> JobEnqueuer {
+    fn enqueuer(&self) -> JobEnqueuer {
         JobEnqueuer {
             tx: self.tx.clone(),
         }
     }
 
+    // XXX: runs single threaded, maybe it shouldn't? A few pooled runners makes sense.
     pub async fn run(self) -> Result<()> {
         let mut stream = self.rx.map(process_job);
 
@@ -281,6 +285,14 @@ impl JobEnqueuer {
 }
 
 async fn process_job(mut job: Job) {
+    lazy_static::lazy_static! {
+        static ref CLIENTS: Clients = Default::default();
+    }
+
+    let uploader = s3::S3Uploader::<bytes::BytesMut, file::TempFileStream>::default()
+        // XXX: move to a setting
+        .bucket("i.brod.es");
+
     if !job
         .set_state_if_eq(
             JobState::Processing(Default::default()),
@@ -292,7 +304,7 @@ async fn process_job(mut job: Job) {
     }
 
     let url = &job.url;
-    match ytdl::youtube_dl_download(url, Option::<&[&str]>::None).await {
+    let file = match ytdl::youtube_dl_download(&CLIENTS, url, Option::<&[&str]>::None).await {
         Ok(mut file) => {
             info!(
                 "downloaded {} bytes",
@@ -311,6 +323,7 @@ async fn process_job(mut job: Job) {
                 Some(JobState::Processing(Default::default())),
             )
             .await;
+            file
         }
         Err(e) => {
             warn!(
@@ -329,6 +342,7 @@ async fn process_job(mut job: Job) {
                 Some(JobState::Processing(Default::default())),
             )
             .await;
+            return;
         }
-    }
+    };
 }

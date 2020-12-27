@@ -1759,6 +1759,22 @@ dependencies = [
 
 [[package]]
 name = "tokio-util"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "24793699f4665ba0416ed287dc794fe6b11a4aa5e4e95b58624f45f6c46b97d4"
+dependencies = [
+ "bytes 0.5.6",
+ "futures-core",
+ "futures-io",
+ "futures-sink",
+ "log",
+ "pin-project-lite 0.1.11",
+ "slab",
+ "tokio 0.3.6",
+]
+
+[[package]]
+name = "tokio-util"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3137de2b078e95274b696cc522e87f22c9a753fe3ef3344116ffb94f104f10a3"
@@ -1919,6 +1935,7 @@ dependencies = [
  "futures",
  "futures-util",
  "glob",
+ "lazy_static",
  "log",
  "prost",
  "prost-build",
@@ -1931,6 +1948,7 @@ dependencies = [
  "tokio 0.3.6",
  "tokio-compat-02",
  "tokio-tungstenite",
+ "tokio-util 0.4.0",
  "url",
  "websocket-codec",
 ]

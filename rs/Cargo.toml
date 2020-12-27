@@ -12,6 +12,7 @@ rand = "0.7"
 log = "0.4"
 env_logger = "0.8"
 anyhow = "1.0"
+lazy_static = "1.4"
 
 rusoto_core = "0.45.0"
 rusoto_s3 = "0.45.0"
@@ -23,6 +24,7 @@ serde_json = "1.0"
 
 tokio = { version = "=0.3.6", default-features = false, features = ["rt-multi-thread", "macros", "sync", "net", "io-util", "time", "process", "fs"] }
 tokio-compat-02 = "0.1"
+tokio-util = { version = "=0.4", features = ["full"] }  # bytes <1 for tungstenite, tokio < 1 for reqwest
 tokio-tungstenite = { version = "0.12", features = ["connect", "stream"] }
 # pins pin-project to 0.2.0, which makes tokio-tungstenite play nice
 websocket-codec = "=0.4.0"

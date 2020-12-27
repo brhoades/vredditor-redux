@@ -1,7 +1,9 @@
 use std::{env::temp_dir, fs::remove_file, iter, path::PathBuf};
 
+use bytes::BytesMut;
 use rand::{distributions, thread_rng, Rng};
-use tokio::fs::File;
+use tokio::{fs::File, io::AsyncRead};
+use tokio_util::codec::{BytesCodec, FramedRead};
 
 use crate::internal::*;
 
@@ -15,8 +17,11 @@ pub struct GuardedTempFile {
     f: File,
 }
 
+pub type TempFileStream = FramedRead<File, BytesCodec>;
+
+#[allow(dead_code)]
 impl GuardedTempFile {
-    pub fn new() -> Result<Self> {
+    pub async fn new() -> Result<Self> {
         let name = temp_dir().join(random_id());
 
         let namestr = name.clone();
@@ -31,9 +36,9 @@ impl GuardedTempFile {
             .to_string();
 
         Ok(Self {
-            f: File::from_std(
-                std::fs::File::create(&name).context("creating temporary named file")?,
-            ),
+            f: File::create(&name)
+                .await
+                .context("creating temporary named file")?,
             namestr,
             name,
         })
@@ -61,6 +66,15 @@ impl GuardedTempFile {
 
     pub async fn len(&mut self) -> Result<u64> {
         self.f.metadata().await.ah().map(|f| f.len())
+    }
+
+    pub async fn stream(&mut self) -> Result<FramedRead<File, BytesCodec>> {
+        // XXX: this clone doesn't seem ideal. Maybe we should return a guarded framedread?
+        self.f
+            .try_clone()
+            .await
+            .map(|f| FramedRead::new(f, BytesCodec::new()))
+            .ah()
     }
 }
 
