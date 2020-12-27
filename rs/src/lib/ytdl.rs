@@ -1,7 +1,8 @@
+use std::collections::HashMap;
 use std::time::Duration;
 
 use serde::Deserialize;
-// use serde_json::Value as JSONValue;
+use serde_json::Value as JSONValue;
 use tokio::{io::AsyncWriteExt, process::Command, stream::StreamExt, try_join};
 
 use crate::{file::GuardedTempFile, internal::*};
@@ -12,16 +13,15 @@ prefer <= 1080p, <50M
 "(bestaudio+bestvideo/best)[height<=1080]/best[filesize<50M]"
 */
 
-// builds a youtubedl command which outputs json with preset format specifiers
-fn youtube_dl(url: &str) -> Box<Command> {
+// builds a basic youtubedl command
+fn youtube_dl() -> Box<Command> {
     let mut cmd = Box::new(Command::new("youtube-dl"));
     cmd.kill_on_drop(true).args(&[
-        "-f",
-        "(bestaudio+bestvideo/best)[height<=1080]/best[filesize<50M]",
+        // "-f",
+        // only sends back video
+        // "(bestaudio+bestvideo/best)[height<=1080][filesize<100M]",
+        // same?!: "bestvideo/best[height<=1080]+bestaudio/best[height<=1080]",
         "--restrict-filenames",
-        "--maxsize",
-        "100M",
-        url,
     ]);
 
     cmd
@@ -41,26 +41,30 @@ struct YTInfo {
     vcodec: String,
     // best acodec. can be 'none'.
     acodec: String,
-    // #[serde(flatten)]
-    // rem: HashMap<String, JSONValue>,
+
+    #[serde(flatten)]
+    rem: HashMap<String, JSONValue>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 struct YTFormat {
     format: String,
+    #[serde(alias = "format_id")]
     id: String,
+    #[serde(alias = "format_note")]
     note: String,
 
     url: String,
-    filesize: usize,
+    filesize: Option<usize>,
     ext: String,
 
     #[serde(flatten)]
     video: Option<YTVideoFormat>,
     #[serde(flatten)]
     audio: Option<YTAudioFormat>,
-    // #[serde(flatten)]
-    // rem: HashMap<String, JSONValue>,
+
+    #[serde(flatten)]
+    rem: HashMap<String, JSONValue>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -88,6 +92,7 @@ impl YTInfo {
     // returns (video, audio)
     pub(crate) fn chosen_format(&self) -> (Option<&YTFormat>, Option<&YTFormat>) {
         let mut fmts = self.format_id.split("+").into_iter();
+        trace!("formats found: {:?}", self.format_id.split("+"));
         (
             fmts.next().and_then(|v| self.get_format(v)),
             fmts.next().and_then(|a| self.get_format(a)),
@@ -103,12 +108,14 @@ async fn youtube_dl_info<'a, S: AsRef<str>, A: AsRef<str>>(
     let url = url.as_ref();
     let args = args.map(|v| v.iter().map(|a| a.as_ref()));
 
-    let mut cmd = youtube_dl(url);
-    let cmd = cmd.arg("-j").arg("--write-info-json");
+    let mut cmd = youtube_dl();
+    let cmd = cmd.arg("-J").arg("--write-info-json").arg(url);
     let cmd = match args {
         Some(args) => cmd.args(args),
         _ => cmd,
     }
+    .stdout(std::process::Stdio::piped())
+    .stdin(std::process::Stdio::piped())
     .spawn()
     .context("spawning youtube-dl command")?;
     let res = cmd
@@ -116,11 +123,11 @@ async fn youtube_dl_info<'a, S: AsRef<str>, A: AsRef<str>>(
         .await
         .context("running youtube-dl command")?;
 
-    ensure!(!res.status.success(), "failed to run youtube-dl on {}", url);
+    ensure!(res.status.success(), "failed to run youtube-dl on {}", url);
 
     std::str::from_utf8(res.stdout.as_slice())
         .ah()
-        .and_then(|s| serde_json::from_str(s).ah())
+        .and_then(|s| serde_json::from_str(s.trim()).ah())
         .with_context(|| format!("parsing stdout from youtube-dl for {}", url))
 }
 
@@ -141,7 +148,11 @@ pub async fn youtube_dl_download<'b, S: AsRef<str>, B: AsRef<str>>(
                 "format: {} for url: {} parsed: ({:?}, {:?})",
                 info.format_id, url, v, a
             );
-            bail!("unknown video format specifier: {:?}", (v, a));
+            bail!(
+                "unknown video format specifier with ({}, {})",
+                v.is_some(),
+                a.is_some()
+            );
         }
     };
 
@@ -214,6 +225,8 @@ async fn merge_audio_video(
         .args(&[
             "-i", vfn, "-i", afn, "-c:v", "copy", "-c:a", "aac", "-f", "mp4", "-",
         ])
+        .stdout(std::process::Stdio::piped())
+        .stdin(std::process::Stdio::piped())
         .spawn()
         .context("failed to spawn ffmpeg subprocess")?;
 

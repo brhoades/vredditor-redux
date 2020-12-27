@@ -313,7 +313,17 @@ async fn process_job(mut job: Job) {
             .await;
         }
         Err(e) => {
-            warn!("error processing job {:?} for {}: {}", job, url, e);
+            warn!(
+                "error processing job {:?} for {}:\n{}\n{}",
+                job,
+                url,
+                e,
+                e.chain()
+                    .into_iter()
+                    .map(|e| format!("{}", e))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            );
             job.set_state_if_eq(
                 JobState::Completed(RawProtoResultWrapper::from(Err::<String, _>(e))),
                 Some(JobState::Processing(Default::default())),
