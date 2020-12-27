@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::process::Stdio;
 use std::time::Duration;
 
 use serde::Deserialize;
@@ -115,8 +116,8 @@ async fn youtube_dl_info<'a, S: AsRef<str>, A: AsRef<str>>(
         Some(args) => cmd.args(args),
         _ => cmd,
     }
-    .stdout(std::process::Stdio::piped())
-    .stdin(std::process::Stdio::piped())
+    .stdout(Stdio::piped())
+    .stdin(Stdio::piped())
     .spawn()
     .context("spawning youtube-dl command")?;
     let res = cmd
@@ -220,42 +221,47 @@ async fn merge_audio_video(
 ) -> Result<GuardedTempFile> {
     let vfn = video.filename();
     let afn = audio.filename();
-    let mut mergefile = GuardedTempFile::new()?;
+    let mergefile = GuardedTempFile::new()?;
 
-    let child = Command::new("ffmpeg")
+    let output = Command::new("ffmpeg")
         .kill_on_drop(true)
         .args(&[
-            "-i", vfn, "-i", afn, "-c:v", "copy", "-c:a", "aac", "-f", "mp4", "-",
+            "-y", // to clobber. This only works since GuardedTempFile explicitly deletes.
+            "-i",
+            vfn,
+            "-i",
+            afn,
+            "-c",
+            "copy",
+            "-f",
+            "mp4",
+            mergefile.filename(),
         ])
-        .stdout(std::process::Stdio::piped())
-        .stdin(std::process::Stdio::piped())
+        .stdout(Stdio::piped())
+        .stdin(Stdio::piped())
         .spawn()
-        .context("failed to spawn ffmpeg subprocess")?;
+        .context("failed to spawn ffmpeg subprocess")?
+        .wait_with_output();
 
     // XXX: does streaming to a file wait for the child to finish outputting complete? I assume so.
-    let mut stdout = child
-        .stdout
-        .ok_or_else(|| format_err!("failed to get stdout handle for child ffmpeg"))?;
-
     // timeout after 3 minutes, running ffmpeg until it terminates or we finish copying stdout to our file
-    let (res, _) = tokio::join! {
-        tokio::io::copy(&mut stdout, mergefile.file_mut()),
-        /*
-        status = child.wait() => {
-            ensure!(
-                !status?.success(),
-                "failed to transcode:\n{}",
-                std::str::from_utf8(child.output()?.stdout.as_slice().unwrap_or("[failed to interpret stderr for ffmpeg]")
-            );
-
-        },
-        */
-        tokio::time::sleep(Duration::from_secs(60 * 3)),
+    let (output, _) = tokio::join! {
+        // tokio::io::copy(&mut stdout, mergefile.file_mut()),
+        output,
+        tokio::time::sleep(Duration::from_secs(15)),
     };
+    let output = output.context("failed to run ffmpeg")?;
+
+    ensure!(
+        output.status.success(),
+        "failed to transcode:\n{}",
+        std::str::from_utf8(output.stderr.as_slice())
+            .unwrap_or("[failed to interpret stderr for ffmpeg]")
+    );
 
     // warn!("ffmpeg child timeout");
     // Err(format_err!("ffmpeg child timed out"))
     // child.kill().await?;
 
-    Ok(res.map(|_| mergefile)?)
+    Ok(mergefile)
 }
