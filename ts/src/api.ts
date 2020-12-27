@@ -134,10 +134,10 @@ const wsStartDownload = (url: string, rawResolve: (_: string) => void, rawReject
         const inner = state?.completed?.resultInner;
         switch (inner?.$case) {
           case "ok":
-            console.log(`file COMPLETE: ${inner}`);
+            console.log(`file COMPLETE: ${JSON.stringify(inner)}`);
             return resolve(inner.ok);
           case "err":
-            console.log(`file failed: ${inner}`);
+            console.log(`file failed: ${JSON.stringify(inner)}`);
             return reject(inner.err);
           default:
             return reject(`unknown result state for completed file from server: ${inner}`);
@@ -189,30 +189,35 @@ export const getURLs = (url: string, opts: { rehost: boolean, resolveOnFirst: bo
         ? wsForURL(url)
         : getVRedditFromUser(url)
     ).then((url) => {
-        let id = vredditID(url);
+      // there is only one URL
+      if (opts.rehost) {
+        return resolve([url]);
+      }
 
-        if (id === undefined) {
-          throw new Error('could not get id from vreddit url');
-        }
+      let id = vredditID(url);
 
-        const qualities = [
-          '1080',
-          '720',
-          '480',
-          '360',
-          '96',
-        ];
-        const mp4Urls = qualities.map((quality) => `https://v.redd.it/${id}/DASH_${quality}.mp4`);
-        const urls = [
-          ...mp4Urls,
-          ...qualities.map((quality) => `https://v.redd.it/${id}/DASH_${quality}`)
-        ];
+      if (id === undefined) {
+        throw new Error('could not get id from vreddit url');
+      }
 
-        // dear lord, here we go
-        const vid = document.createElement('video');
-        loadVideos(urls, [], vid, resolve, opts);
-      })
-      .catch((err) => reject(err))
+      const qualities = [
+        '1080',
+        '720',
+        '480',
+        '360',
+        '96',
+      ];
+      const mp4Urls = qualities.map((quality) => `https://v.redd.it/${id}/DASH_${quality}.mp4`);
+      const urls = [
+        ...mp4Urls,
+        ...qualities.map((quality) => `https://v.redd.it/${id}/DASH_${quality}`)
+      ];
+
+      // dear lord, here we go
+      const vid = document.createElement('video');
+      loadVideos(urls, [], vid, resolve, opts);
+    })
+    .catch((err) => reject(err))
   ))
 );
 
