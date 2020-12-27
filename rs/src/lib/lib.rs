@@ -286,13 +286,6 @@ impl JobEnqueuer {
 }
 
 async fn process_job(mut job: Job) {
-    let clients: Clients = Default::default();
-    let uploader: s3::S3Uploader<bytes::BytesMut, file::TempFileStream> =
-        s3::S3Uploader::<bytes::BytesMut, file::TempFileStream>::default()
-            // XXX: move to a setting
-            .bucket("i.brod.es")
-            .clone();
-
     if !job
         .set_state_if_eq(
             JobState::Processing(Default::default()),
@@ -303,33 +296,17 @@ async fn process_job(mut job: Job) {
         error!("process_job called with job in bad state: {:?}", job);
     }
 
-    let url = &job.url;
-    let mut file = match ytdl::youtube_dl_download(&clients, url, Option::<&[&str]>::None).await {
-        Ok(mut file) => {
-            info!(
-                "downloaded {} bytes",
-                file.file_mut()
-                    .metadata()
-                    .await
-                    .map(|v| v.len().to_string())
-                    .unwrap_or_else(|_| format!(
-                        "[couldn't query bytes for {} in {}]",
-                        url,
-                        file.filename()
-                    ))
-            );
-            job.set_state_if_eq(
-                JobState::Uploading(Default::default()),
-                Some(JobState::Processing(Default::default())),
-            )
-            .await;
-            file
+    match handle_job(&mut job).await {
+        Ok(uploaded) => {
+            info!("completed job for {} to {}", job.url, uploaded);
+            job.set_state_if_eq(JobState::Completed(Ok(uploaded).into()), None)
+                .await;
         }
         Err(e) => {
             warn!(
                 "error processing job {:?} for {}:\n{}\n{}",
                 job,
-                url,
+                &job.url,
                 e,
                 e.chain()
                     .into_iter()
@@ -339,20 +316,52 @@ async fn process_job(mut job: Job) {
             );
             job.set_state_if_eq(
                 JobState::Completed(RawProtoResultWrapper::from(Err::<String, _>(e))),
-                Some(JobState::Processing(Default::default())),
+                None,
             )
             .await;
-            return;
         }
     };
+}
 
-    let stream = file.stream().await.unwrap();
-    let s3_client: &S3Client = &clients.s3_client;
+async fn handle_job(job: &mut Job) -> Result<String> {
+    let clients: Clients = Default::default();
+    let uploader: s3::S3Uploader<bytes::BytesMut, file::TempFileStream> =
+        s3::S3Uploader::<bytes::BytesMut, file::TempFileStream>::default()
+            // XXX: move to a setting
+            .bucket("i.brod.es")
+            .clone();
+
+    let url = &job.url;
+    let s3_client = &clients.s3_client;
+    let mut file = ytdl::youtube_dl_download(&clients, url, Option::<&[&str]>::None).await?;
+    debug!(
+        "downloaded {} bytes",
+        file.file_mut()
+            .metadata()
+            .await
+            .map(|v| v.len().to_string())
+            .unwrap_or_else(|_| format!(
+                "[couldn't query bytes for {} in {}]",
+                url,
+                file.filename()
+            ))
+    );
+    job.set_state_if_eq(
+        JobState::Uploading(Default::default()),
+        Some(JobState::Processing(Default::default())),
+    )
+    .await;
+    let stream = file.stream().await.context("failed to get file stream")?;
 
     let mut uploader = uploader.clone();
     uploader
         .filename(format!("{}.{}", file.filename(), "mp4"))
         // XXX: error handling
         .data(stream);
-    uploader.upload(s3_client).await.unwrap();
+    uploader
+        .upload(s3_client)
+        .await
+        .with_context(|| format!("failed to upload file from {} to s3", job.url))?;
+
+    Ok(format!("https://i.brod.es/{}", file.filename()))
 }

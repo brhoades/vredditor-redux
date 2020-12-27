@@ -250,10 +250,12 @@ async fn merge_audio_video(
 
     // XXX: does streaming to a file wait for the child to finish outputting complete? I assume so.
     // timeout after 3 minutes, running ffmpeg until it terminates or we finish copying stdout to our file
-    let (output, _) = tokio::join! {
+    let output = tokio::select! {
         // tokio::io::copy(&mut stdout, mergefile.file_mut()),
-        output,
-        tokio::time::sleep(Duration::from_secs(15)),
+        output = output => { output },
+        _ = tokio::time::sleep(Duration::from_secs(15)) => {
+            return Err(format_err!("timed out after 15 seconds"));
+        }
     };
     let output = output.context("failed to run ffmpeg")?;
 
