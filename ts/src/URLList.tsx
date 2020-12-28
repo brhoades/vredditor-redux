@@ -61,11 +61,25 @@ export default ({ urls, video }: { urls: string[], video?: boolean }) => {
                       <>
                         {quality(url)}
                         &nbsp;
-                        (<a href={url} target="_blank">preview</a>)
+                        (
+                          <a
+                            href={url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                          >
+                            preview
+                          </a>
+                        )
                       </>
                     )
                     : (
-                      <a href={url} target="_blank">preview</a>
+                      <a
+                        href={url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                      >
+                        preview
+                      </a>
                     )
                 }
               </Form.Label>

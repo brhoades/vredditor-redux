@@ -43,7 +43,7 @@ export const getURLsFromMPD = (xml: string): string[] => {
   ).map(({ nodeValue }) => nodeValue);
 };
 
-const getVRedditFromUser = (statusCb: (status: string) => void, url: string): Promise<string> => (
+const getVRedditFromUser = (url: string, statusCb: (status: string) => void): Promise<string> => (
   new Promise((resolve, reject) => {
     if (/v\.redd\.it\/([A-Za-z0-9]+)/.test(url)) {
       statusCb("Scanning reddit");
@@ -64,41 +64,52 @@ const getVRedditFromUser = (statusCb: (status: string) => void, url: string): Pr
 const server = "ws://127.0.0.1:8080";
 let connection: VRWebSocket | null = null;
 
-const wsForURL = (statusCb: (status: string) => void, url: string): Promise<string> => new Promise((resolve, reject) => {
-  statusCb("Connecting");
+export type HostedURLOpts = {
+  statusCallback: (status: string) => void;
+  authz?: string;
+  server?: string;
+};
+
+export const getHostedURL = (
+  targetURL: string,
+  opts: HostedURLOpts = { statusCallback: () => {} },
+): Promise<string> => new Promise<string>((_, reject) => {
+  const { statusCallback } = opts;
+  statusCallback("Connecting");
 
   if (connection === null) {
     connection = new VRWebSocket(server);
     connection.onopen = () => {
-      wsForURL(statusCb, url).then(resolve).catch(reject);
+      return getHostedURL(targetURL, { ...opts, statusCallback });
     };
     connection.onclose = () => { connection = null; reject("connection with server closed"); };
     return;
   }
 
-  connection.onmessage = (msg) => {
-    parseResponse(msg.data).then(({ resp }) => {
-      if (resp?.$case === "accepted") {
+  connection.onmessage = ({ data }) => (parseResponse(data)
+    .then((resp) => {
+      if (resp.$case === "accepted") {
         const accept = resp.accepted;
 
         if (accept?.resultInner?.$case === "ok") {
-          statusCb("Requesting");
-          return wsStartDownload(statusCb, url, resolve, reject);
+          statusCallback("Requesting");
+          return wsStartDownload(targetURL, opts);
         } else if (accept?.resultInner?.$case === "err") {
-          statusCb("Server declined");
-          return reject(`server rejected handshake: ${accept?.resultInner?.err}`);
+          statusCallback("Server declined");
+          reject(`server rejected handshake: ${accept?.resultInner?.err}`);
         }
       }
 
       reject(`unknown response from server after handshake: ${proto.TranscodeResp.toJSON({ resp })}`);
-    }).catch(reject);
-  };
+    }).catch(reject));
 
-  statusCb("Checking permission");
+  statusCallback("Checking permission");
   connection.send(NewRequest.handshake());
 });
 
-const wsStartDownload = (statusCb: (status: string) => void, url: string, rawResolve: (_: string) => void, rawReject: (_: string) => void) => {
+const wsStartDownload = (targetURL: string, opts: HostedURLOpts): Promise<string> => new Promise<string>((rawResolve, rawReject) => {
+  const { statusCallback } = opts;
+
   let gotStatus = false; // debounce
   let done = false;
   const resolve = (s: string) => {
@@ -112,65 +123,60 @@ const wsStartDownload = (statusCb: (status: string) => void, url: string, rawRes
 
   if (connection === null) {
     console.error("connection closed");
-    statusCb("Server hung up");
+    statusCallback("Server hung up");
     return reject("connection was closed");
   }
 
   connection.onmessage = (msg) => (
-    parseResponse(msg.data).then(({ resp }) => {
-      if (resp === undefined) {
-        statusCb("Server communication failure");
-        return reject('response had an invalid response');
-      }
-
+    parseResponse(msg.data).then((resp) => {
       console.log(`server message: ${resp}`);
-      if (resp?.$case !== "jobStatus") {
-        statusCb("Server communication failure");
+      if (resp.$case !== "jobStatus") {
+        statusCallback("Server communication failure");
         return reject(`unexpected message type, expected state: ${msg}`);
       }
       const { state } = resp.jobStatus;
 
       if (!state) {
-        statusCb("Server communication failure");
+        statusCallback("Server communication failure");
         return reject(`unexpected message type, expected state: ${msg}`);
       }
       const stateTy = state?.$case;
 
       if (stateTy === "queued") {
-        statusCb("Queueing");
+        statusCallback("Queueing");
         console.log("file queued");
       } else if (state?.$case === "completed") {
         const inner = state?.completed?.resultInner;
         switch (inner?.$case) {
           case "ok":
             console.log(`file COMPLETE: ${JSON.stringify(inner)}`);
-            statusCb("Completed");
+            statusCallback("Completed");
             return resolve(inner.ok);
           case "err":
-            statusCb("Errored");
+            statusCallback("Errored");
             console.log(`file failed: ${JSON.stringify(inner)}`);
             return reject(inner.err);
           default:
             return reject(`unknown result state for completed file from server: ${inner}`);
         }
       } else if (stateTy === "processing") {
-        statusCb("Processing");
+        statusCallback("Processing");
         console.log("file PROCESSING");
       } else if (stateTy === "cancelled") {
-        statusCb("Cancelled");
+        statusCallback("Cancelled");
         console.log("file cancelled");
         return reject("operation was cancelled");
       } else if (stateTy === "uploading") {
-        statusCb("Uploading");
+        statusCallback("Uploading");
         console.log("file UPLOADING");
       } else if (stateTy === "noJobs") {
-        statusCb("No jobs");
+        statusCallback("No jobs");
         console.log("no file queued");
       } else if (stateTy === "unknown") {
-        statusCb("Unknown");
+        statusCallback("Unknown");
         console.log("unknown file state");
       } else {
-        statusCb("Communication error");
+        statusCallback("Communication error");
         console.log(`unknown state message: ${state}`);
       }
 
@@ -178,7 +184,7 @@ const wsStartDownload = (statusCb: (status: string) => void, url: string, rawRes
     }).catch(reject)
   );
 
-  connection.send(NewRequest.transcode(url));
+  connection.send(NewRequest.transcode(targetURL));
 
   let statusFn = () => {
     if (connection === null || done) {
@@ -196,21 +202,18 @@ const wsStartDownload = (statusCb: (status: string) => void, url: string, rawRes
 
   setTimeout(statusFn, 1000);
 
-  console.log(`started download for URL: ${url}`);
+  console.log(`started download for URL: ${targetURL}`);
+});
+
+export type ScrapeURLOpts = {
+  statusCallback: (status: string) => void;
+  resolveOnFirst: boolean;
 };
 
-export const getURLs = (statusCb: (status: string) => void, url: string, opts: { rehost: boolean, resolveOnFirst: boolean } = { rehost: false, resolveOnFirst: false }): Promise<string[]> => (
-  new Promise((resolve, reject) => (
-    (
-      opts.rehost
-        ? wsForURL(statusCb, url)
-        : getVRedditFromUser(statusCb, url)
-    ).then((url) => {
-      // there is only one URL
-      if (opts.rehost) {
-        return resolve([url]);
-      }
 
+export const scrapeRedditURLs = (url: string, opts: ScrapeURLOpts): Promise<string[]> => (
+  new Promise((resolve, reject) => (
+    getVRedditFromUser(url, opts.statusCallback).then((url) => {
       let id = vredditID(url);
 
       if (id === undefined) {
@@ -230,23 +233,28 @@ export const getURLs = (statusCb: (status: string) => void, url: string, opts: {
         ...qualities.map((quality) => ({ name: `${quality} legacy`, url: `https://v.redd.it/${id}/DASH_${quality}`})),
       ];
 
-      // dear lord, here we go
+      // dear lord, here we go. the stub video element we'll listen for events on to tell if the video is real.
       const vid = document.createElement('video');
-      loadVideos(statusCb, urls, [], vid, resolve, opts);
+      loadVideos(urls, [], vid, resolve, opts);
     })
     .catch((err) => reject(err))
   ))
 );
+
+type URL = {
+  url: string;
+  name: string;
+};
 
 // Recursively calls itself based on events from the past vid's loading. If it loads, we know
 // it's a good url, if it fails, we don't.
 //
 // If resolveOnFirst is true, we'll resolve on the first success with one URL. Otherwise,
 // we accumate URLs by walking all of urls before resolving.
-const loadVideos = (statusCb: (status: string) => void, urls: { name: string, url: string}[], valid: string[], vid: HTMLVideoElement, resolve: (_: string[]) => void, opts: { resolveOnFirst: boolean }) => {
+const loadVideos = (urls: URL[], valid: string[], vid: HTMLVideoElement, resolve: (_: string[]) => void, opts: ScrapeURLOpts) => {
   const [{ url, name }, ...rem] = urls;
   const once = { once: '' };
-  statusCb(`Checking ${name}`);
+  opts.statusCallback(`Checking ${name}`);
 
   const meta = (_e: Event) => {
     remove();
@@ -259,7 +267,7 @@ const loadVideos = (statusCb: (status: string) => void, urls: { name: string, ur
     }
 
     setTimeout(() => {
-      loadVideos(statusCb, rem, newURLs, vid, resolve, opts);
+      loadVideos(rem, newURLs, vid, resolve, opts);
     }, 500);
   };
 
@@ -278,7 +286,7 @@ const loadVideos = (statusCb: (status: string) => void, urls: { name: string, ur
         return;
       }
 
-      loadVideos(statusCb, rem, valid, vid, resolve, opts);
+      loadVideos(rem, valid, vid, resolve, opts);
     }, 500);
   };
 
@@ -307,18 +315,21 @@ const loadVideos = (statusCb: (status: string) => void, urls: { name: string, ur
   vid.src = url;
 };
 
-const parseResponse = (data: Body): Promise<proto.TranscodeResp> => new Promise((resolve, reject) => (
+type AlwaysProtoResp = Exclude<proto.TranscodeResp['resp'], undefined>;
+
+const parseResponse = (data: Body): Promise<AlwaysProtoResp> => new Promise((resolve, reject) => (
   data.arrayBuffer().then((data: ArrayBuffer) => {
     const { resp } = proto.TranscodeResp.decode(new Uint8Array(data));
     console.log("message received from server");
     console.dir(resp);
 
-    if (resp?.$case === "error") {
-      reject("server errored: " + resp.error);
-      return;
+    if (resp === undefined) {
+      throw Error("server returned an incomplete response");
+    } else if (resp.$case === "error") {
+      throw Error("server errored: " + resp.error);
     }
 
-    resolve({ resp });
+    return resolve(resp);
   }).catch(reject)
 ));
 
