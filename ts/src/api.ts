@@ -188,13 +188,13 @@ const wsStartDownload = (statusCb: (status: string) => void, url: string, rawRes
     if (gotStatus) {
       connection.send(NewRequest.status());
     } else {
-      console.log("Have not received status, debouncing");
+      console.log("have not received status, debouncing");
     }
 
-    setTimeout(statusFn, 5000);
+    setTimeout(statusFn, 1000);
   };
 
-  setTimeout(statusFn, 5000);
+  setTimeout(statusFn, 1000);
 
   console.log(`started download for URL: ${url}`);
 };
