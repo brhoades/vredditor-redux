@@ -6,30 +6,20 @@ use glob::glob;
 use prost_build::compile_protos;
 
 fn main() {
-    match build() {
-        Ok(_) => (),
-        Err(e) => {
-            println!("{}", e);
-            println!("{}", e.backtrace());
-            panic!("{}", e)
-        }
-    }
-}
-
-fn build() -> Result<()> {
-    let base_path = canonicalize(PathBuf::from("../proto"))?;
+    let proto_path = PathBuf::from(option_env!("PROTO_PATH").unwrap_or("../proto"));
+    let base_path = canonicalize(proto_path.clone()).map_err(|e| format_err!("tried path {}: {}", proto_path.to_str().unwrap(), e)).unwrap();
     let path = base_path.join(PathBuf::from("*.proto"));
     let pathstr = path
         .to_str()
-        .ok_or_else(|| format_err!("failed to make base path into string"))?;
+        .ok_or_else(|| format_err!("failed to make base path into string")).unwrap();
 
     let protos = glob(pathstr)
-        .map_err(|e| format_err!("failed to glob path {}: {}", pathstr, e))?
+        .map_err(|e| format_err!("failed to glob path {}: {}", pathstr, e)).unwrap()
         .into_iter()
         .map(|r| {
             r.map_err(|e| format_err!("{}", e).context("glob succeeded but path was erroneous"))
         })
-        .collect::<Result<Vec<_>>>()?;
+        .collect::<Result<Vec<_>>>().unwrap();
 
-    Ok(compile_protos(protos.as_slice(), &[base_path]).unwrap())
+    compile_protos(protos.as_slice(), &[base_path]).unwrap()
 }
