@@ -361,6 +361,7 @@ async fn handle_job(job: &mut Job) -> Result<String> {
     uploader
         .filename(&filename)
         .content_length(file.len().await.context("len for upload to s3")? as i64)
+        .tag("app", "vredditor")
         .data(file.stream().await.context("failed to get file stream")?);
 
     uploader

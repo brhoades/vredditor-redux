@@ -26,6 +26,8 @@ where
 
     /// The canned ACL to apply to the object.
     pub acl: Option<String>,
+
+    pub tags: Option<std::collections::HashMap<String, String>>,
     /*
     // copied from S3PutObjectRequest
     /// Specifies caching behavior along the request/reply chain.
@@ -49,7 +51,6 @@ where
     /// The type of storage to use for the object. Defaults to 'STANDARD'.
     pub storage_class: Option<String>,
     /// The tag-set for the object. The tag-set must be encoded as URL Query parameters. (For example, "Key1=Value1")
-    pub tagging: Option<String>,
     */
 }
 
@@ -66,6 +67,7 @@ where
             filename: None,
             data: None,
             content_length: None,
+            tags: None,
         }
     }
 }
@@ -82,6 +84,7 @@ where
             data: None,
             content_length: None,
             acl: None,
+            tags: None,
         }
     }
 }
@@ -117,6 +120,18 @@ where
         self
     }
 
+    pub fn tag<K: ToString, V: ToString>(&mut self, key: K, value: V) -> &mut Self {
+        if self.tags.is_none() {
+            self.tags = Some(Default::default());
+        }
+
+        self.tags
+            .as_mut()
+            .unwrap()
+            .insert(key.to_string(), value.to_string());
+        self
+    }
+
     pub fn build(self) -> Result<PutObjectRequest> {
         let body = rusoto_core::ByteStream::new(
             // compat must be external to any map, since a .map on a stream will expect the
@@ -147,7 +162,7 @@ where
     // alternatively, to upload directly.
     pub async fn upload<C: S3Put>(self, c: &C) -> Result<()> {
         if let Some(_) = option_env!("FAKE_S3") {
-            warn!("faking an s3 upload");
+            warn!("FAKE_S3 set. Faking an upload to S3.");
             tokio::time::sleep(std::time::Duration::from_secs(3)).await;
             debug!("fake upload complete");
             return Ok(());
