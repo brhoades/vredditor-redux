@@ -9,7 +9,6 @@ import Col from 'react-bootstrap/Col';
 import Alert from 'react-bootstrap/Alert';
 
 import FinalFormControl from './FinalFormControl';
-import FormCheck from './FormCheck';
 import FormSelect from './FormSelect';
 import SpinButton from './SpinButton';
 import { ScrapeOptions, YoutubeDLOptions } from './ExtraFormOptions';
@@ -28,11 +27,9 @@ type Values = {
   server?: string;
 };
 
-type ErrorValues = Partial<Values> & {
-  [FORM_ERROR]?: string;
-};
+type ErrorValues<T> = { [P in keyof T]?: string } & { [FORM_ERROR]?: string };
 
-const onSubmit = (statusCb: (status: string) => void, setURLs: (urls: string[]) => void) => ({ url, conversionMethod, ...options }: Values): Promise<ErrorValues> => (
+const onSubmit = (statusCb: (status: string) => void, setURLs: (urls: string[]) => void) => ({ url, conversionMethod, ...options }: Values): Promise<ErrorValues<Values>> => (
   new Promise((resolve, _reject) => {
     // persist all options on success
     let promise;
@@ -65,7 +62,7 @@ const onSubmit = (statusCb: (status: string) => void, setURLs: (urls: string[]) 
   })
 );
 
-type URLProps = { status: string, cookies: Cookies } & FormRenderProps<Values>;
+type URLProps = { status: string } & FormRenderProps<Values>;
 
 const URLForm = ({
   handleSubmit,
@@ -78,7 +75,6 @@ const URLForm = ({
   submitErrors,
   values,
   status,
-  cookies,
 }: URLProps ) => {
   const formError = submitError || error;
   const serverError = submitErrors !== undefined && submitErrors[FORM_ERROR] !== undefined;
@@ -121,11 +117,11 @@ const URLForm = ({
               <Form.Group as={Col} md="12" lg="8">
                 {
                   values.conversionMethod === "youtubedl" &&
-                    <YoutubeDLOptions cookies={cookies} />
+                    <YoutubeDLOptions />
                 }
                 {
                   values.conversionMethod === "scrape" &&
-                    <ScrapeOptions cookies={cookies} />
+                    <ScrapeOptions />
                 }
               </Form.Group>
             </Row>
@@ -149,11 +145,10 @@ const URLForm = ({
   );
 };
 
-const validate = ({ url, ...rem }: Values): ErrorValues => {
+const validate = ({ url, conversionMethod, server, authz }: Values): ErrorValues<Values> => {
+  let errors: ErrorValues<Values> = {};
   if (!url || url.length < 3) {
-    return {
-      url: 'A valid URL is required',
-    };
+    errors.url = 'A valid URL is required';
   }
 
   try {
@@ -164,7 +159,17 @@ const validate = ({ url, ...rem }: Values): ErrorValues => {
     };
   }
 
-  return {};
+  if (conversionMethod === 'youtubedl') {
+    if (server === undefined || server.length < 5) {
+      errors.server = 'A valid server address is required';
+    }
+    if (authz === undefined || authz.length < 5) {
+      // XXX: parse proto
+      errors.authz = 'This authorization token is absent or incorrect';
+    }
+  }
+
+  return errors;
 };
 
 const decorators = [util.withCookiePersistence<Values>([
@@ -191,7 +196,7 @@ export default withCookies(({ cookies, setURLs }: { cookies: Cookies, setURLs: (
       validate={validate}
       initialValues={defaults}
       decorators={decorators}
-      render={(props: FormRenderProps<Values>) => <URLForm status={status} cookies={cookies} {...(props as any)} />}
+      render={(props: FormRenderProps<Values>) => <URLForm status={status} {...(props as any)} />}
     />
   )
 });
@@ -200,14 +205,18 @@ const HelpText = ({ conversionMethod }: { conversionMethod: "scrape" | "youtubed
   if (conversionMethod === "scrape") {
     return (
       <Form.Text className="text-muted">
-        Can only use v.redd.it links or reddit comments links.
+        Provide either a direct v.redd.it link or a link to a video's comments.
       </Form.Text>
     );
   } else if (conversionMethod === "youtubedl") {
     return (
       <Form.Text className="text-muted">
         Provide any link to any &nbsp;
-        <a href="https://github.com/ytdl-org/youtube-dl/blob/master/docs/supportedsites.md">
+        <a
+          href="https://github.com/ytdl-org/youtube-dl/blob/master/docs/supportedsites.md"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
           youtube-dl supported site
         </a>.
       </Form.Text>

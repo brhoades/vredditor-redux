@@ -9,13 +9,7 @@ import FormCheck from './FormCheck';
 import FinalFormControl from './FinalFormControl';
 import * as util from './util';
 
-type CookiesProps = {
-  cookies: Cookies,
-};
-
-export const YoutubeDLOptions = ({
-  cookies,
-}: CookiesProps) => (
+export const YoutubeDLOptions = () => (
   <>
     <Form.Group as={Col} md="12" lg="8">
       <Form.Label>Authorization Key</Form.Label>
@@ -24,6 +18,7 @@ export const YoutubeDLOptions = ({
         label="Authorization Key"
         name="authz"
         type="password"
+        required={true}
         placeholder="Special key provided by the server owner."
       />
     </Form.Group>
@@ -34,6 +29,7 @@ export const YoutubeDLOptions = ({
         label="Server"
         name="server"
         type="text"
+        required={true}
         placeholder={"api.example.com"}
         initialValue={util.ifLocal("localhost:8080")}
       />
@@ -41,9 +37,7 @@ export const YoutubeDLOptions = ({
   </>
 );
 
-export const ScrapeOptions = ({
-  cookies,
-}: CookiesProps) => (
+export const ScrapeOptions = () => (
   <>
     <Form.Group as={Col} md="12" lg="8">
       <Field

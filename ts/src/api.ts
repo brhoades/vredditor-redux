@@ -61,7 +61,6 @@ const getVRedditFromUser = (url: string, statusCb: (status: string) => void): Pr
   })
 );
 
-const server = "ws://127.0.0.1:8080";
 let connection: VRWebSocket | null = null;
 
 export type HostedURLOpts = {
@@ -74,8 +73,16 @@ export const getHostedURL = (
   targetURL: string,
   opts: HostedURLOpts = { statusCallback: () => {} },
 ): Promise<string> => new Promise<string>((_, reject) => {
-  const { statusCallback } = opts;
+  const { authz, server, statusCallback } = opts;
   statusCallback("Connecting");
+
+  if (server === undefined) {
+    return reject('Convert server was missing but is required');
+  }
+
+  if (authz === undefined) {
+    return reject('Authorization was missing but is required');
+  }
 
   if (connection === null) {
     connection = new VRWebSocket(server);
