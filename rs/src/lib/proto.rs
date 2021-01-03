@@ -1,9 +1,10 @@
 use std::convert::TryFrom;
 use std::fmt::{Display, Formatter, Result as FmtResult};
 
-use anyhow::{format_err, Result};
-pub use prost::Message as ProstMessage;
+pub use prost::{Message as ProstMessage, Oneof as OneOf};
 use tokio_tungstenite::tungstenite::protocol::Message;
+
+use crate::internal::*;
 
 mod proto_inner {
     include!(concat!(env!("OUT_DIR"), "/main.rs"));
@@ -11,7 +12,8 @@ mod proto_inner {
 
 pub use proto_inner::{
     result::ResultInner as RawProtoResult,
-    transcode_req::{self, Req as TranscodeReqMessage, Transcode as TranscodeOpts},
+    token::Token,
+    transcode_req::{self, Handshake, Req as TranscodeReqMessage, Transcode as TranscodeOpts},
     transcode_resp::{
         self, job_status::State as JobState, JobStatus, Resp as TranscodeRespMessage,
     },
@@ -377,5 +379,21 @@ impl Into<Message> for TranscodeResp {
 impl Into<Message> for TranscodeRespMessage {
     fn into(self) -> Message {
         TranscodeResp { resp: Some(self) }.into()
+    }
+}
+
+/************************************
+ * Handshake
+ ***********************************/
+impl Handshake {
+    pub fn from_raw(raw: Vec<u8>) -> Self {
+        Self {
+            // token: Some(::V1(raw)),
+            token: None,
+        }
+    }
+
+    pub fn token(&self) -> Option<&Token> {
+        unimplemented!()
     }
 }

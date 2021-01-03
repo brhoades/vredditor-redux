@@ -4,6 +4,7 @@ mod file;
 pub(crate) mod internal;
 pub mod proto;
 pub mod s3;
+mod token;
 pub mod ytdl;
 
 use std::convert::TryFrom;
@@ -27,18 +28,22 @@ pub async fn run_server(addr: String) -> Result<()> {
     let _ = env_logger::try_init();
     let q = JobQueue::new();
     let enqueuer = q.enqueuer();
-
-    try_join!(q.run(), tcp_listener_loop(enqueuer, addr))?;
+    let authz = token::EnvAuthorizer::new_from_env("VR_AUTHORIZED_KEYS")?;
+    try_join!(q.run(), tcp_listener_loop(enqueuer, authz, addr))?;
     Ok(())
 }
 
-async fn tcp_listener_loop(eq: JobEnqueuer, addr: String) -> Result<()> {
+async fn tcp_listener_loop<A: token::Authorizer + 'static>(
+    eq: JobEnqueuer,
+    authz: A,
+    addr: String,
+) -> Result<()> {
     // Create the event loop and TCP listener we'll accept connections on.
     let listener = TcpListener::bind(&addr).await?;
     info!("Listening on: {}", addr);
 
     while let Ok((stream, _)) = listener.accept().await {
-        tokio::spawn(accept_connection(eq.clone(), stream));
+        tokio::spawn(accept_connection(eq.clone(), authz.clone(), stream));
     }
 
     Ok(())
@@ -88,7 +93,11 @@ enum StreamState {
     Done(Job),
 }
 
-async fn accept_connection(mut eq: JobEnqueuer, stream: TcpStream) -> Result<()> {
+async fn accept_connection<A: token::Authorizer>(
+    mut eq: JobEnqueuer,
+    authz: A,
+    stream: TcpStream,
+) -> Result<()> {
     let addr = stream
         .peer_addr()
         .context("connected streams should have a peer address")?;
@@ -116,17 +125,21 @@ async fn accept_connection(mut eq: JobEnqueuer, stream: TcpStream) -> Result<()>
 
     while let Some(msg) = rx.next().await {
         stream_state = match msg {
-            Ok(msg) => match handle_message(stream_state, &mut tx, &mut eq, &addr, msg).await {
-                Ok(state) => state,
-                Err(e) => {
-                    warn!(
-                        "{} -> handle_message errored, assuming conn closed: {}",
-                        addr, e
-                    );
+            Ok(msg) => {
+                match handle_message(stream_state, &mut tx, authz.clone(), &mut eq, &addr, msg)
+                    .await
+                {
+                    Ok(state) => state,
+                    Err(e) => {
+                        warn!(
+                            "{} -> handle_message errored, assuming conn closed: {}",
+                            addr, e
+                        );
 
-                    return Ok(());
+                        return Ok(());
+                    }
                 }
-            },
+            }
             Err(e) => {
                 warn!("{} -> error on connection: {}", addr, e);
                 tx.send(TranscodeRespMessage::Error(format!(
@@ -141,9 +154,10 @@ async fn accept_connection(mut eq: JobEnqueuer, stream: TcpStream) -> Result<()>
     Ok(())
 }
 
-async fn handle_message<'a, T>(
+async fn handle_message<'a, T, A: token::Authorizer>(
     state: StreamState,
     tx: &mut T,
+    authz: A,
     eq: &mut JobEnqueuer,
     addr: &SocketAddr,
     msg: TranscodeReqMessage,
@@ -154,13 +168,33 @@ where
         + std::marker::Unpin,
 {
     match msg {
-        TranscodeReqMessage::Handshake(_) => match &state {
-            StreamState::New => {
-                tx.send(TranscodeRespMessage::handshake_accepted("READY"))
+        TranscodeReqMessage::Handshake(Handshake { ref token }) => match (token.as_ref().and_then(|t| t.token.as_ref()), &state) {
+            (Some(inner_token), StreamState::New) => {
+                return if !authz.is_authorized(&inner_token) {
+                    debug!("{} -> invalid handshake token: {:?}", addr, token);
+                    tx.send(TranscodeRespMessage::handshake_rejected(
+                        "token is not authorized",
+                    ))
                     .await?;
-                return Ok(StreamState::Handshake);
+                    Ok(StreamState::New)
+                } else {
+                    debug!("{} -> handshake accepted", addr);
+                    tx.send(TranscodeRespMessage::handshake_accepted("READY"))
+                        .await?;
+                    Ok(StreamState::Handshake)
+                }
             }
-            other => {
+            (None, StreamState::New) => {
+                debug!(
+                    "{} -> token is required but not provided: {:?}",
+                    addr, token
+                );
+                tx.send(TranscodeRespMessage::handshake_rejected(
+                    "token is required but not provided",
+                ))
+                .await?;
+            }
+            (_, other) => {
                 debug!("{} -> unexpected handshake from state {:?}", addr, other);
                 tx.send(TranscodeRespMessage::handshake_rejected(
                     "cannot handshake at this time",

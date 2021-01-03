@@ -20,7 +20,7 @@ import "google/protobuf/empty.proto";
 // req _ -> resp Invalid
 message TranscodeReq {
   oneof req {
-    google.protobuf.Empty handshake = 1;
+    Handshake handshake = 1;
     Transcode transcode = 2;
     google.protobuf.Empty status = 3;
     google.protobuf.Empty cancel = 4;
@@ -28,6 +28,10 @@ message TranscodeReq {
 
   message Transcode {
     string url = 1;
+  }
+
+  message Handshake {
+    Token token = 1;
   }
 }
 
@@ -58,5 +62,13 @@ message Result {
   oneof result_inner {
     string ok = 1;
     string err = 2;
+  }
+}
+
+message Token {
+  oneof token {
+    // V1 is a shared random secret known by the end user.
+    // It's presented as base64 and decoded into bytes before transmission as a Token.
+    bytes v1 = 1;
   }
 }

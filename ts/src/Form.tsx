@@ -160,12 +160,16 @@ const validate = ({ url, conversionMethod, server, authz }: Values): ErrorValues
   }
 
   if (conversionMethod === 'youtubedl') {
-    if (server === undefined || server.length < 5) {
+    if (server === undefined) {
+      errors.server = 'A server address is required';
+    } else if (server.length < 5) {
       errors.server = 'A valid server address is required';
     }
-    if (authz === undefined || authz.length < 5) {
+    if (authz === undefined) {
+      errors.authz = 'An authorization token required';
+    } else if (authz.length < 5) {
       // XXX: parse proto
-      errors.authz = 'This authorization token is absent or incorrect';
+      errors.authz = 'This authorization token is malformed';
     }
   }
 
