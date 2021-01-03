@@ -96,8 +96,8 @@ const URLForm = ({
             component={FormSelect}
             type="select"
           >
-            <option value="scrape">Scrape reddit for source URL (reddit only)</option>
-            <option value="youtubedl">Convert and transcode URL (youtube-dl)</option>
+            <option value="scrape">Scrape Reddit</option>
+            <option value="youtubedl">youtube-dl (private)</option>
           </Field>
         </Form.Group>
       </Row>
