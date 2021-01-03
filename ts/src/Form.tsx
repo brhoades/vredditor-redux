@@ -29,7 +29,7 @@ type Values = {
 
 type ErrorValues<T> = { [P in keyof T]?: string } & { [FORM_ERROR]?: string };
 
-const onSubmit = (statusCb: (status: string) => void, setURLs: (urls: string[]) => void) => ({ url, conversionMethod, ...options }: Values): Promise<ErrorValues<Values>> => (
+const onSubmit = (statusCb: (status: string) => void, setURLs: (urls: string[]) => void) => ({ url, conversionMethod, server, ...options }: Values): Promise<ErrorValues<Values>> => (
   new Promise((resolve, _reject) => {
     // persist all options on success
     let promise;
@@ -38,6 +38,7 @@ const onSubmit = (statusCb: (status: string) => void, setURLs: (urls: string[]) 
       promise = api.getHostedURL(url, {
        statusCallback: statusCb,
         ...options,
+        server: server ? `ws://${server}` : undefined,
       }).then((url: string) => {
         setURLs([url]);
         resolve({});
@@ -54,9 +55,12 @@ const onSubmit = (statusCb: (status: string) => void, setURLs: (urls: string[]) 
     }
 
     return promise
-      .catch((error: string) => {
+      .catch((error: Error) => {
+        console.error('error when returning promise');
+        console.dir(error);
+
         resolve({
-          [FORM_ERROR]: error,
+          [FORM_ERROR]: error.message,
         });
       });
   })
@@ -149,14 +153,14 @@ const validate = ({ url, conversionMethod, server, authz }: Values): ErrorValues
   let errors: ErrorValues<Values> = {};
   if (!url || url.length < 3) {
     errors.url = 'A valid URL is required';
-  }
-
-  try {
-    new URL(url);
-  } catch (_) {
-    return {
-      url: 'This isn\'t a valid URL. It should be in the format https://v.redd.it/asdf1234xyz',
-    };
+  } else {
+    try {
+      new URL(url);
+    } catch (e) {
+      console.log('bad url');
+      console.error(e);
+      errors.url = 'This isn\'t a valid URL. It should be in the format https://v.redd.it/asdf1234xyz';
+    }
   }
 
   if (conversionMethod === 'youtubedl') {
@@ -167,9 +171,14 @@ const validate = ({ url, conversionMethod, server, authz }: Values): ErrorValues
     }
     if (authz === undefined) {
       errors.authz = 'An authorization token required';
-    } else if (authz.length < 5) {
-      // XXX: parse proto
-      errors.authz = 'This authorization token is malformed';
+    } else {
+      try {
+        Buffer.from(authz, 'base64');
+      } catch (e) {
+        console.dir(e);
+        // XXX: parse proto
+        errors.authz = 'This authorization token is malformed';
+      }
     }
   }
 
@@ -191,6 +200,7 @@ export default withCookies(({ cookies, setURLs }: { cookies: Cookies, setURLs: (
   try {
     defaults = cookies.get<string | undefined>('persist') || '{}';
   } catch (e) {
+    console.log("error when getting a cookie");
     console.error(e);
   }
 

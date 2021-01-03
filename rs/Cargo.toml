@@ -12,7 +12,7 @@ rand = "0.7"
 log = "0.4"
 env_logger = "0.8"
 anyhow = "1.0"
-lazy_static = "1.4"
+base64 = "0.13"
 
 sodiumoxide = "0.2.6"
 reqwest = { version = "0.10", features = ["stream"] }

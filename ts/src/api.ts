@@ -1,5 +1,7 @@
 import * as proto from './pb/main';
 import { Empty } from './google/protobuf/empty';
+import WebSocketAsPromised from 'websocket-as-promised';
+import Channel from 'chnl';
 
 export type APIError<Values> = {
   error?: string;
@@ -38,8 +40,7 @@ export const getURLsFromMPD = (xml: string): string[] => {
   const xmlDoc = parser.parseFromString(xml, 'text/xml');
 
   return [].slice.call(
-    xmlDoc
-      .getElementsByTagName('BaseURL')
+    xmlDoc.getElementsByTagName('BaseURL')
   ).map(({ nodeValue }) => nodeValue);
 };
 
@@ -63,6 +64,31 @@ const getVRedditFromUser = (url: string, statusCb: (status: string) => void): Pr
 
 let connection: VRWebSocket | null = null;
 
+const openConnection = (addr: string) => (
+  new Promise<VRWebSocket>((resolve, reject) => {
+    if (connection !== null) {
+      resolve(connection);
+    }
+    connection = new VRWebSocket(addr);
+
+    const timeout = setTimeout(() => {
+      clearTimeout(timeout);
+      if (connection !== null && !connection.isOpened) {
+        console.log("timeout hit");
+        console.dir(connection);
+        connection.close();
+        connection = null;
+        reject("connection timeout");
+      }
+    }, 5000);
+
+    return connection.open().then(() => {
+      clearTimeout(timeout);
+      resolve(connection!);
+    }, reject);
+  })
+);
+
 export type HostedURLOpts = {
   statusCallback: (status: string) => void;
   authz?: string;
@@ -72,49 +98,44 @@ export type HostedURLOpts = {
 export const getHostedURL = (
   targetURL: string,
   opts: HostedURLOpts = { statusCallback: () => {} },
-): Promise<string> => new Promise<string>((_, reject) => {
-  const { authz, server, statusCallback } = opts;
-  statusCallback("Connecting");
+): Promise<string> => (
+  // get a connection
+  new Promise<VRWebSocket>((resolve, reject) => {
+    const { authz, server, statusCallback } = opts;
+    statusCallback("Connecting");
 
-  if (server === undefined) {
-    return reject('Convert server was missing but is required');
-  }
-
-  if (authz === undefined) {
-    return reject('Authorization was missing but is required');
-  }
-
-  if (connection === null) {
-    connection = new VRWebSocket(server);
-    connection.onopen = () => {
-      return getHostedURL(targetURL, { ...opts, statusCallback });
-    };
-    connection.onclose = () => { connection = null; reject("connection with server closed"); };
-    return;
-  }
-
-  connection.onmessage = ({ data }) => (parseResponse(data)
+    if (server === undefined) {
+      reject('Convert server was missing but is required');
+    } else if (authz === undefined) {
+      reject('Authorization was missing but is required');
+    } else {
+      return openConnection(server).then(resolve, reject);
+    }
+  })
+  // handshake
+).then((connection) => {
+  opts.statusCallback("Checking permission");
+  return connection
+    .sendRequest(NewRequest.handshake(opts.authz))
     .then((resp) => {
       if (resp.$case === "accepted") {
-        const accept = resp.accepted;
-
+        const accept = resp?.accepted;
         if (accept?.resultInner?.$case === "ok") {
-          statusCallback("Requesting");
-          return wsStartDownload(targetURL, opts);
+          opts.statusCallback("Requesting");
+          return connection;
         } else if (accept?.resultInner?.$case === "err") {
-          statusCallback("Server declined");
-          reject(`server rejected handshake: ${accept?.resultInner?.err}`);
+          opts.statusCallback("Server declined");
+          throw new Error(`server rejected handshake: ${accept?.resultInner?.err}`);
         }
+      } else {
+        throw new Error(`unknown response from server after handshake: ${proto.TranscodeResp.toJSON({ resp })}`);
       }
+      return connection;
+    });
+// download!
+}).then((connection) => wsStartDownload(connection, targetURL, opts));
 
-      reject(`unknown response from server after handshake: ${proto.TranscodeResp.toJSON({ resp })}`);
-    }).catch(reject));
-
-  statusCallback("Checking permission");
-  connection.send(NewRequest.handshake());
-});
-
-const wsStartDownload = (targetURL: string, opts: HostedURLOpts): Promise<string> => new Promise<string>((rawResolve, rawReject) => {
+const wsStartDownload = (connection: VRWebSocket, targetURL: string, opts: HostedURLOpts) => new Promise<string>((rawResolve, rawReject) => {
   const { statusCallback } = opts;
 
   let gotStatus = false; // debounce
@@ -134,18 +155,20 @@ const wsStartDownload = (targetURL: string, opts: HostedURLOpts): Promise<string
     return reject("connection was closed");
   }
 
-  connection.onmessage = (msg) => (
-    parseResponse(msg.data).then((resp) => {
+  connection.onMessage.addListener((data) => {
+    console.log(`incoming message`, data);
+
+    parseResponse(data).then((resp) => {
       console.log(`server message: ${resp}`);
       if (resp.$case !== "jobStatus") {
         statusCallback("Server communication failure");
-        return reject(`unexpected message type, expected state: ${msg}`);
+        return reject(`unexpected message type, expected state: ${data}`);
       }
       const { state } = resp.jobStatus;
 
       if (!state) {
         statusCallback("Server communication failure");
-        return reject(`unexpected message type, expected state: ${msg}`);
+        return reject(`unexpected message type, expected state: ${data}`);
       }
       const stateTy = state?.$case;
 
@@ -189,7 +212,7 @@ const wsStartDownload = (targetURL: string, opts: HostedURLOpts): Promise<string
 
       gotStatus = true;
     }).catch(reject)
-  );
+  });
 
   connection.send(NewRequest.transcode(targetURL));
 
@@ -342,40 +365,75 @@ const parseResponse = (data: Body): Promise<AlwaysProtoResp> => new Promise((res
 
 
 class VRWebSocket {
-  private inner: WebSocket;
+  private inner: WebSocketAsPromised;
   constructor(addr: string) {
-    this.inner = new WebSocket(addr);
+    this.inner = new WebSocketAsPromised(addr);
 
-    this.inner.onerror = (v) => {
-      if (this.onerror) {
-        this.onerror(v);
-      }
-
-      console.log(`websocket errored: ${v}`);
-    };
-    this.inner.onclose = (v) => {
-      if (this.onclose) {
-        this.onclose(v);
-      }
-
-      console.log(`websocket closed: ${v}`);
-    };
-    this.inner.onmessage = (v) => (this.onmessage && this.onmessage(v));
-    this.inner.onopen = (v) => (this.onopen && this.onopen(v));
+    this.onClose = this.inner.onClose;
+    this.onClose.addListener((v) => {
+      console.error(`websocket closed`);
+      console.dir(v);
+    });
+    this.onError = this.inner.onError;
+    this.onError.addListener((v) => {
+      console.error(`websocket errored`);
+      console.dir(v);
+    });
+    this.onResponse = this.inner.onResponse;
+    this.onMessage = this.inner.onMessage;
   }
 
-  public onclose: ((this: VRWebSocket, ev: CloseEvent) => any) | null = null;
-  public onerror: ((this: VRWebSocket, ev: Event) => any) | null = null;
-  public onmessage: ((this: VRWebSocket, ev: MessageEvent) => any) | null = null;
-  public onopen: ((this: VRWebSocket, ev: Event) => any) | null = null;
+  public onClose: Channel;
+  public onError: Channel;
+  public onResponse: Channel;
+  public onMessage: Channel;
+
+  public get isOpened(): boolean {
+    return this.inner.isOpened;
+  }
+
+  public get isOpening(): boolean {
+    return this.inner.isOpening;
+  }
+
+  public open(): Promise<Event> {
+    return this.inner.open()
+  }
+
+  public close(_code?: string, _reason?: string): Promise<Event> {
+    console.log("closing connection");
+    return this.inner.close()
+  }
 
   public send(data: proto.TranscodeReq) {
-    this.inner.send(proto.TranscodeReq.encode(data).finish());
+    console.log("sending data", data);
+    this.inner.send(proto.TranscodeReq.encode(data).finish())
+  }
+
+  public async sendRequest(data: proto.TranscodeReq): Promise<AlwaysProtoResp> {
+    // this.inner.sendRequest expects JSON RPCs. It ties together the response to the
+    // request with a injected requestID which we'll eagerly simulate with our non-parallel
+    // stream.
+
+    // XXX: this will break when the server begins to send responses that aren't 1:1 with requests.
+    const ret = new Promise<AlwaysProtoResp>((resolve, reject) => {
+      this.onMessage.addOnceListener((data) => {
+        console.log("presumptive response to request", data);
+        console.dir(data);
+        parseResponse(data).then(resolve, reject)
+      });
+    });
+
+    this.send(data);
+
+    return ret;
   }
 }
 
 const NewRequest = {
   transcode: (url: string): proto.TranscodeReq => ({ req: { $case: 'transcode', transcode: { url } } }),
-  handshake: (): proto.TranscodeReq => ({ req: { $case: 'handshake', handshake: Empty } }),
+  handshake: (authz?: string): proto.TranscodeReq => ({ req: { $case: 'handshake', handshake: {
+    token: authz === undefined ? undefined : ({ token: { $case: 'v1', v1: Buffer.from(authz, 'base64') }})
+  }}}),
   status: (): proto.TranscodeReq => ({ req: { $case: 'status', status: Empty } }),
 };

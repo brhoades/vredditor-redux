@@ -48,7 +48,7 @@ export default ({ urls, video }: { urls: string[], video?: boolean }) => {
       <div className="mt-3" />
       {
         urls.map((url: string) => (
-          <Col md="8">
+          <Col key={url} md="8">
             <Form.Group>
               <SelectAndCopyField
                 value={url}
