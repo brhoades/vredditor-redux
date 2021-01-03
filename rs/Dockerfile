@@ -31,6 +31,9 @@ RUN pip install --no-cache-dir youtube_dl && apk del py3-pip && apk add --no-cac
 
 COPY --from=builder /tmp/build/vredditor-api /bin
 
-RUN chmod +x /bin/vredditor-api
+RUN mkdir /scratch && chmod +x /bin/vredditor-api
+
+VOLUME /scratch
 
 ENTRYPOINT ["/sbin/tini", "--"]
+CMD ["/bin/vredditor-api"]
