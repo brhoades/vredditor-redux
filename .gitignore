@@ -5,4 +5,7 @@ ts/src/google
 ts/src/main.ts
 ts/build
 .\#*
+**/.\#*
 
+.eslintcache
+yarn-error.log
