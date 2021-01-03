@@ -35,10 +35,32 @@ const onSubmit = (statusCb: (status: string) => void, setURLs: (urls: string[]) 
     let promise;
 
     if (conversionMethod === "youtubedl") {
+      let correctProto;
+      if (!window.location.protocol || window.location.protocol === "http:") {
+        correctProto = "ws:";
+      } else {
+        correctProto = "wss:";
+      }
+
+      // resolve to a secure URL, allowing user overrides if present.
+      let resolvedURL = server;
+      try {
+        const serverURL = new URL(server!);
+        if (serverURL.protocol !== correctProto) {
+          serverURL.protocol = correctProto;
+        }
+        console.dir(serverURL);
+
+        resolvedURL = serverURL.toString();
+      } catch(e) {
+        resolvedURL = `${correctProto}://${server}`;
+      }
+      console.log(`resolved url: ${resolvedURL}`);
+
       promise = api.getHostedURL(url, {
        statusCallback: statusCb,
         ...options,
-        server: server ? `ws://${server}` : undefined,
+        server: resolvedURL,
       }).then((url: string) => {
         setURLs([url]);
         resolve({});
