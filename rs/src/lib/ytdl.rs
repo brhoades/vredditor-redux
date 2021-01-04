@@ -145,7 +145,7 @@ async fn youtube_dl_info<'a, S: AsRef<str>, A: AsRef<str>>(
                 .ah()
                 .with_context(|| format!("when parsing: {}", s.trim()))
         })
-        .with_context(|| format!("parsing stdout from youtube-dl for {}", url))
+        .with_context(|| format!("youtube-dl for {} produced unexpected output", url))
 }
 
 pub(crate) async fn youtube_dl_download<'b, S: AsRef<str>, B: AsRef<str>>(
@@ -174,31 +174,37 @@ pub(crate) async fn youtube_dl_download<'b, S: AsRef<str>, B: AsRef<str>>(
         }
     };
 
+    // HACK: replace .m3u8 with .ts to work around HLS. We should read the file to determine that, but this'll work great.
+    let video_format_url = video_format.url.replace(".m3u8", ".ts");
+    let audio_format_url = &audio_format.url;
+
     // get their URLs.
     let (mut video, mut audio) = try_join!(
-        clients.download_to_tempfile(&video_format.url),
-        clients.download_to_tempfile(&audio_format.url)
+        clients.download_to_tempfile(&video_format_url),
+        clients.download_to_tempfile(audio_format_url)
     )
     .with_context(ctx)?;
     let (videofn, audiofn) = (video.path_string(), audio.path_string());
 
     debug!(
-        "video: {} with {} bytes",
+        "video: {} with {} bytes from {}",
         videofn,
         video
             .len()
             .await
             .with_context(ctx)
-            .context("downloaded video")?
+            .context("downloaded video")?,
+        video_format_url,
     );
     debug!(
-        "audio: {} with {} bytes",
+        "audio: {} with {} bytes from {}",
         audiofn,
         audio
             .len()
             .await
             .with_context(ctx)
-            .context("downloaded audio")?
+            .context("downloaded audio")?,
+        audio_format_url,
     );
 
     merge_audio_video(video, audio).await.with_context(ctx)

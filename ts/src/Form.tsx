@@ -241,7 +241,7 @@ const HelpText = ({ conversionMethod }: { conversionMethod: "scrape" | "youtubed
   } else if (conversionMethod === "youtubedl") {
     return (
       <Form.Text className="text-muted">
-        Provide any link to any &nbsp;
+        Video link to any &nbsp;
         <a
           href="https://github.com/ytdl-org/youtube-dl/blob/master/docs/supportedsites.md"
           target="_blank"
