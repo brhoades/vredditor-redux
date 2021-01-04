@@ -75,12 +75,12 @@ const onSubmit = (statusCb: (status: string) => void, setURLs: (urls: string[]) 
     }
 
     return promise
-      .catch((error: Error) => {
+      .catch((error: Error | string) => {
         console.error('error when returning promise');
         console.dir(error);
 
         resolve({
-          [FORM_ERROR]: error.message,
+          [FORM_ERROR]: (typeof error === "string") ? error : error.message,
         });
       });
   })
