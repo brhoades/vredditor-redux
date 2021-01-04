@@ -34,6 +34,10 @@ fn youtube_dl() -> Box<Command> {
     cmd
 }
 
+fn default_codec() -> String {
+    "none".to_string()
+}
+
 #[derive(Debug, Clone, Deserialize)]
 struct YTInfo {
     formats: Vec<YTFormat>,
@@ -45,8 +49,10 @@ struct YTInfo {
     format: String,
 
     // best vcodec. can be 'none'.
+    #[serde(default = "default_codec")]
     vcodec: String,
     // best acodec. can be 'none'.
+    #[serde(default = "default_codec")]
     acodec: String,
 
     #[serde(flatten)]
@@ -76,7 +82,7 @@ struct YTFormat {
 
 #[derive(Debug, Clone, Deserialize)]
 struct YTVideoFormat {
-    vcodec: String,
+    vcodec: Option<String>,
     fps: f32,
     height: u32,
     width: u32,
@@ -84,7 +90,7 @@ struct YTVideoFormat {
 
 #[derive(Debug, Clone, Deserialize)]
 struct YTAudioFormat {
-    acodec: String,
+    acodec: Option<String>,
     abr: u32,
     asr: u32,
     tbr: f32,
