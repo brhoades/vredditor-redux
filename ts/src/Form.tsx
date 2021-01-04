@@ -49,13 +49,11 @@ const onSubmit = (statusCb: (status: string) => void, setURLs: (urls: string[]) 
         if (serverURL.protocol !== correctProto) {
           serverURL.protocol = correctProto;
         }
-        console.dir(serverURL);
 
         resolvedURL = serverURL.toString();
       } catch(e) {
         resolvedURL = `${correctProto}://${server}`;
       }
-      console.log(`resolved url: ${resolvedURL}`);
 
       promise = api.getHostedURL(url, {
        statusCallback: statusCb,
@@ -179,8 +177,6 @@ const validate = ({ url, conversionMethod, server, authz }: Values): ErrorValues
     try {
       new URL(url);
     } catch (e) {
-      console.log('bad url');
-      console.error(e);
       errors.url = 'This isn\'t a valid URL. It should be in the format https://v.redd.it/asdf1234xyz';
     }
   }
@@ -197,8 +193,6 @@ const validate = ({ url, conversionMethod, server, authz }: Values): ErrorValues
       try {
         Buffer.from(authz, 'base64');
       } catch (e) {
-        console.dir(e);
-        // XXX: parse proto
         errors.authz = 'This authorization token is malformed';
       }
     }

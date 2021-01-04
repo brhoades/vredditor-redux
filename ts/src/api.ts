@@ -2,6 +2,7 @@ import * as proto from './pb/main';
 import { Empty } from './google/protobuf/empty';
 import WebSocketAsPromised from 'websocket-as-promised';
 import Channel from 'chnl';
+  import { listenerCount } from 'stream';
 
 export type APIError<Values> = {
   error?: string;
@@ -145,17 +146,16 @@ const wsStartDownload = (connection: VRWebSocket, targetURL: string, opts: Hoste
     rawResolve(s);
   };
   const reject = (s: string) => {
-    done = true;
+    if (connection !== null && !done) {
+      done = true;
+    }
     rawReject(s);
   };
 
-  if (connection === null) {
-    console.error("connection closed");
-    statusCallback("Server hung up");
-    return reject("connection was closed");
-  }
-
-  connection.onMessage.addListener((data) => {
+  const listen = (data: Body) => {
+    if (done) {
+      connection.onMessage.removeListener(listen);
+    }
     console.log(`incoming message`, data);
 
     parseResponse(data).then((resp) => {
@@ -212,7 +212,15 @@ const wsStartDownload = (connection: VRWebSocket, targetURL: string, opts: Hoste
 
       gotStatus = true;
     }).catch(reject)
-  });
+  };
+
+  if (connection === null) {
+    console.error("connection closed");
+    statusCallback("Server hung up");
+    return reject("connection was closed");
+  }
+
+  connection.onMessage.addListener(listen);
 
   connection.send(NewRequest.transcode(targetURL));
 
