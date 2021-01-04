@@ -159,7 +159,7 @@ pub(crate) async fn youtube_dl_download<'b, S: AsRef<str>, B: AsRef<str>>(
     // get info to retrieve target formats
     let info = youtube_dl_info(url, args).await?;
     let (video_format, audio_format) = match info.chosen_format() {
-        (Some(v), Some(a)) => (v, a),
+        (Some(v), a) => (Some(v), a),
         (v, a) => {
             error!("unknown video format specifier returned. only audio? only video?");
             error!(
@@ -167,50 +167,65 @@ pub(crate) async fn youtube_dl_download<'b, S: AsRef<str>, B: AsRef<str>>(
                 info.format_id, url, v, a
             );
             bail!(
-                "unknown video format specifier with ({}, {})",
-                v.is_some(),
-                a.is_some()
+                "unsupported audio/video format combination: {}/{}",
+                a.map(|a| a.format.clone()).unwrap_or("none".to_owned()),
+                v.map(|v| v.format.clone()).unwrap_or("none".to_owned()),
             );
         }
     };
 
     // HACK: replace .m3u8 with .ts to work around HLS. We should read the file to determine that, but this'll work great.
-    let video_format_url = video_format.url.replace(".m3u8", ".ts");
-    let audio_format_url = &audio_format.url;
+    let video_format_url = video_format.as_ref().map(|v| v.url.replace(".m3u8", ".ts"));
+    let audio_format_url = audio_format.as_ref().map(|u| u.url.clone());
 
     // get their URLs.
     let (mut video, mut audio) = try_join!(
-        clients.download_to_tempfile(&video_format_url),
-        clients.download_to_tempfile(audio_format_url)
+        clients.maybe_download_to_tempfile(video_format_url.as_ref()),
+        clients.maybe_download_to_tempfile(audio_format_url.as_ref())
     )
     .with_context(ctx)?;
-    let (videofn, audiofn) = (video.path_string(), audio.path_string());
+    if let Some(ref mut video) = video {
+        debug!(
+            "video: {} with {} bytes from {}",
+            video.path_string(),
+            video
+                .len()
+                .await
+                .with_context(ctx)
+                .context("downloaded video")?,
+            video_format_url.unwrap(),
+        );
+    }
 
-    debug!(
-        "video: {} with {} bytes from {}",
-        videofn,
-        video
-            .len()
-            .await
-            .with_context(ctx)
-            .context("downloaded video")?,
-        video_format_url,
-    );
-    debug!(
-        "audio: {} with {} bytes from {}",
-        audiofn,
-        audio
-            .len()
-            .await
-            .with_context(ctx)
-            .context("downloaded audio")?,
-        audio_format_url,
-    );
+    if let Some(ref mut audio) = audio {
+        debug!(
+            "audio: {} with {} bytes from {}",
+            audio.path_string(),
+            audio
+                .len()
+                .await
+                .with_context(ctx)
+                .context("downloaded audio")?,
+            audio_format_url.unwrap(),
+        );
+    }
 
     merge_audio_video(video, audio).await.with_context(ctx)
 }
 
 impl Clients {
+    // downloads to a temp file if passed something, otherwise succeeds with None.
+    async fn maybe_download_to_tempfile<U: reqwest::IntoUrl>(
+        &self,
+        url: Option<U>,
+    ) -> Result<Option<GuardedTempFile>> {
+        if let Some(url) = url {
+            self.download_to_tempfile(url.into_url()?).await.map(Some)
+        } else {
+            Ok(None)
+        }
+    }
+
     async fn download_to_tempfile<U: reqwest::IntoUrl>(&self, url: U) -> Result<GuardedTempFile> {
         let url = url.into_url()?;
         let urlstr = url.as_str();
@@ -241,27 +256,28 @@ impl Clients {
 // Consumes (and deletes) passed files. Runs ffmpeg on both to combine them
 // into a single file, then returns it.
 async fn merge_audio_video(
-    video: GuardedTempFile,
-    audio: GuardedTempFile,
+    video: Option<GuardedTempFile>,
+    audio: Option<GuardedTempFile>,
 ) -> Result<GuardedTempFile> {
-    let vfn = video.pathstr();
-    let afn = audio.pathstr();
+    let vfn = video.as_ref().map(|v| v.pathstr());
+    let afn = audio.as_ref().map(|a| a.pathstr());
     let mut mergefile = GuardedTempFile::new().await?;
+    let mergefn = mergefile.path_string();
+
+    let mut args = vec![
+        "-y", // to clobber. This only works since GuardedTempFile explicitly unlinks the file by name.
+    ];
+    if let Some(vfn) = vfn {
+        args.extend(vec!["-i", vfn]);
+    }
+    if let Some(afn) = afn {
+        args.extend(vec!["-i", afn]);
+    }
+    args.extend(vec!["-c", "copy", "-f", "mp4", &mergefn]);
 
     let mut child = Command::new("ffmpeg")
         .kill_on_drop(true)
-        .args(&[
-            "-y", // to clobber. This only works since GuardedTempFile explicitly deletes.
-            "-i",
-            &vfn,
-            "-i",
-            &afn,
-            "-c",
-            "copy",
-            "-f",
-            "mp4",
-            &mergefile.path_string(),
-        ])
+        .args(&args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
