@@ -567,9 +567,9 @@ dependencies = [
 
 [[package]]
 name = "hyper"
-version = "0.14.1"
+version = "0.14.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b7b980c7bc75203b968f06374cbde00bf1818e02e156b8e5b6ccf440fb53b6d0"
+checksum = "12219dc884514cb4a6a03737f4413c0e01c23a1b059b0156004b23f1e19dccbe"
 dependencies = [
  "bytes 1.0.0",
  "futures-channel",
@@ -603,11 +603,12 @@ dependencies = [
 
 [[package]]
 name = "hyper-tls"
-version = "0.4.3"
-source = "git+https://github.com/teozkr/hyper-tls.git?branch=chore/tokio-1.0#c451376ff212f94dbb8899ff6352335ff631e7a6"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d6183ddfa99b85da61a140bea0efc93fdf56ceaa041b37d553518030827f9905"
 dependencies = [
  "bytes 1.0.0",
- "hyper 0.14.1",
+ "hyper 0.14.2",
  "native-tls",
  "tokio 1.0.1",
  "tokio-native-tls",
@@ -1213,7 +1214,7 @@ dependencies = [
  "http",
  "http-body 0.3.1",
  "hyper 0.13.9",
- "hyper-tls 0.4.3 (registry+https://github.com/rust-lang/crates.io-index)",
+ "hyper-tls 0.4.3",
  "ipnet",
  "js-sys",
  "lazy_static",
@@ -1236,8 +1237,9 @@ dependencies = [
 
 [[package]]
 name = "rusoto_core"
-version = "0.45.0"
-source = "git+https://github.com/benesch/rusoto?branch=tokio-10#72abc68632b9ac25368e2acbcecb9c3cc38b3aa8"
+version = "0.46.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "02aff20978970d47630f08de5f0d04799497818d16cafee5aec90c4b4d0806cf"
 dependencies = [
  "async-trait",
  "base64",
@@ -1245,12 +1247,10 @@ dependencies = [
  "crc32fast",
  "futures",
  "http",
- "hyper 0.14.1",
- "hyper-tls 0.4.3 (git+https://github.com/teozkr/hyper-tls.git?branch=chore/tokio-1.0)",
+ "hyper 0.14.2",
+ "hyper-tls 0.5.0",
  "lazy_static",
  "log",
- "md5",
- "percent-encoding",
  "rusoto_credential",
  "rusoto_signature",
  "rustc_version",
@@ -1262,15 +1262,15 @@ dependencies = [
 
 [[package]]
 name = "rusoto_credential"
-version = "0.45.0"
-source = "git+https://github.com/benesch/rusoto?branch=tokio-10#72abc68632b9ac25368e2acbcecb9c3cc38b3aa8"
+version = "0.46.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8e91e4c25ea8bfa6247684ff635299015845113baaa93ba8169b9e565701b58e"
 dependencies = [
  "async-trait",
  "chrono",
  "dirs-next",
  "futures",
- "hyper 0.14.1",
- "regex",
+ "hyper 0.14.2",
  "serde",
  "serde_json",
  "shlex",
@@ -1280,8 +1280,9 @@ dependencies = [
 
 [[package]]
 name = "rusoto_s3"
-version = "0.45.0"
-source = "git+https://github.com/benesch/rusoto?branch=tokio-10#72abc68632b9ac25368e2acbcecb9c3cc38b3aa8"
+version = "0.46.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "abc3f56f14ccf91f880b9a9c2d0556d8523e8c155041c54db155b384a1dd1119"
 dependencies = [
  "async-trait",
  "bytes 1.0.0",
@@ -1292,8 +1293,9 @@ dependencies = [
 
 [[package]]
 name = "rusoto_signature"
-version = "0.45.0"
-source = "git+https://github.com/benesch/rusoto?branch=tokio-10#72abc68632b9ac25368e2acbcecb9c3cc38b3aa8"
+version = "0.46.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5486e6b1673ab3e0ba1ded284fb444845fe1b7f41d13989a54dd60f62a7b2baa"
 dependencies = [
  "base64",
  "bytes 1.0.0",
@@ -1301,7 +1303,7 @@ dependencies = [
  "hex",
  "hmac",
  "http",
- "hyper 0.14.1",
+ "hyper 0.14.2",
  "log",
  "md5",
  "percent-encoding",
