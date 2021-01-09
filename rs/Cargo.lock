@@ -1160,7 +1160,7 @@ dependencies = [
 [[package]]
 name = "rusoto_core"
 version = "0.46.0"
-source = "git+https://github.com/brhoades/rusoto?rev=fd9d31c5e#fd9d31c5ee0b244f0b1a7f27ddcc67c6ffa163c2"
+source = "git+https://github.com/brhoades/rusoto?rev=e21e23f70#e21e23f708eaa4047689a5786b591021d52b2681"
 dependencies = [
  "async-trait",
  "base64",
@@ -1184,7 +1184,7 @@ dependencies = [
 [[package]]
 name = "rusoto_credential"
 version = "0.46.0"
-source = "git+https://github.com/brhoades/rusoto?rev=fd9d31c5e#fd9d31c5ee0b244f0b1a7f27ddcc67c6ffa163c2"
+source = "git+https://github.com/brhoades/rusoto?rev=e21e23f70#e21e23f708eaa4047689a5786b591021d52b2681"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1201,7 +1201,7 @@ dependencies = [
 [[package]]
 name = "rusoto_s3"
 version = "0.46.0"
-source = "git+https://github.com/brhoades/rusoto?rev=fd9d31c5e#fd9d31c5ee0b244f0b1a7f27ddcc67c6ffa163c2"
+source = "git+https://github.com/brhoades/rusoto?rev=e21e23f70#e21e23f708eaa4047689a5786b591021d52b2681"
 dependencies = [
  "async-trait",
  "bytes 1.0.0",
@@ -1213,7 +1213,7 @@ dependencies = [
 [[package]]
 name = "rusoto_signature"
 version = "0.46.0"
-source = "git+https://github.com/brhoades/rusoto?rev=fd9d31c5e#fd9d31c5ee0b244f0b1a7f27ddcc67c6ffa163c2"
+source = "git+https://github.com/brhoades/rusoto?rev=e21e23f70#e21e23f708eaa4047689a5786b591021d52b2681"
 dependencies = [
  "base64",
  "bytes 1.0.0",

@@ -16,8 +16,7 @@ RUN apt-get install -y curl xz-utils && \
 RUN apt-get install -y protobuf-compiler libssl-dev
 
 ADD Cargo.toml /tmp/build
-# RUN cargo build --release || echo "ok"
-RUN cargo build || echo "ok"
+RUN cargo build --release || echo "ok"
 
 ADD src /tmp/build/src
 ADD build.rs /tmp/build
@@ -25,10 +24,8 @@ ADD proto /tmp/build/proto
 
 ENV PROTOC="/usr/bin/protoc"
 ENV PROTO_PATH="/tmp/build/proto"
-# RUN cargo build --release
-RUN cargo build
-# RUN cp target/release/vredditor-api . && cargo clean
-RUN cp target/debug/vredditor-api . && cargo clean
+RUN cargo build --release
+RUN cp target/release/vredditor-api . && cargo clean
 
 FROM debian:bullseye-slim
 
