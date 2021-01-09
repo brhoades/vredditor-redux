@@ -1,16 +1,23 @@
-FROM rustlang/rust:nightly-alpine as builder
+FROM rustlang/rust:nightly as builder
 
-RUN apk --no-cache --no-progress upgrade && \
-    apk --no-cache --no-progress add bash curl openssl-dev musl-dev protoc && \
-    mkdir /tmp/build
+RUN apt-get update && apt-get -y upgrade && mkdir /tmp/build
 WORKDIR /tmp/build
 
-ENV RUSTFLAGS="-C target-feature=-crt-static"
-ENV RUST_BACKTRACE=full
-ENV RUST_LOG=trace
+# ffmpeg build deps
+# RUN apt-get install -y build-essential curl tar libass-dev libtheora-dev libvorbis-dev libtool cmake automake autoconf
+
+# statically compiled ffmpeg. debian's ffmpeg comes with the everything (~800 mb image)
+RUN apt-get install -y curl xz-utils && \
+    curl https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz | tar -xJf - && \
+    bash -c "mv ./ffmpeg-*/ffmpeg /tmp/build && rm -rf ./ffmpeg-*/" && \
+    apt-get remove -y xz-utils curl
+
+# Rust build deps
+RUN apt-get install -y protobuf-compiler libssl-dev
 
 ADD Cargo.toml /tmp/build
-RUN cargo build --release || echo "ok"
+# RUN cargo build --release || echo "ok"
+RUN cargo build || echo "ok"
 
 ADD src /tmp/build/src
 ADD build.rs /tmp/build
@@ -18,22 +25,25 @@ ADD proto /tmp/build/proto
 
 ENV PROTOC="/usr/bin/protoc"
 ENV PROTO_PATH="/tmp/build/proto"
-RUN cargo build --release
-RUN cp target/release/vredditor-api . && cargo clean
+# RUN cargo build --release
+RUN cargo build
+# RUN cp target/release/vredditor-api . && cargo clean
+RUN cp target/debug/vredditor-api . && cargo clean
 
-FROM alpine:latest
+FROM debian:bullseye-slim
 
-RUN apk --no-cache --no-progress upgrade && \
-    apk --no-cache --no-progress add bash tini libgcc ffmpeg py3-pip && \
+RUN apt-get update && \
+    apt-get -y upgrade && \
+    apt-get install --no-install-recommends -y tini python3 python3-pip && \
     rm -rf /tmp/*
 
-RUN pip install --no-cache-dir youtube_dl && apk del py3-pip && apk add --no-cache python3
+RUN pip3 install --no-cache-dir youtube_dl
 
-COPY --from=builder /tmp/build/vredditor-api /bin
+COPY --from=builder /tmp/build/ffmpeg /tmp/build/vredditor-api /bin/
 
 RUN mkdir /scratch && chmod +x /bin/vredditor-api
 
 VOLUME /scratch
 
-ENTRYPOINT ["/sbin/tini", "--"]
+ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["/bin/vredditor-api"]

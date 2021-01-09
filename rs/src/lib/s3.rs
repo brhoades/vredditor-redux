@@ -6,6 +6,7 @@ use bytes::Bytes;
 use futures::{Stream, StreamExt};
 use rusoto_s3::{PutObjectRequest, S3};
 use tokio::time::sleep;
+use urlencoding::encode as urlencode;
 
 use crate::internal::*;
 
@@ -136,12 +137,17 @@ where
     }
 
     pub fn build(self) -> Result<PutObjectRequest> {
-        let body = rusoto_core::ByteStream::new(
+        // Or _sometimes_ rusoto attemts to send chunked and s3 rejects it with 'invalid header'.
+        let size = self
+            .content_length
+            .ok_or_else(|| format_err!("content_length is required but missing"))?;
+        let body = rusoto_core::ByteStream::new_with_size(
             // compat must be external to any map, since a .map on a stream will expect the
             // newer tokio runtime and panic
             self.data
                 .ok_or_else(|| format_err!("data is required but missing"))?
                 .map(|b| b.map(Into::into)),
+            size as usize,
         );
         Ok(PutObjectRequest {
             key: self
@@ -151,11 +157,16 @@ where
                 .bucket
                 .ok_or_else(|| format_err!("bucket is required but missing"))?,
             acl: self.acl,
-            content_length: Some(
-                self.content_length
-                    .ok_or_else(|| format_err!("content_length is required but missing"))?,
-            ),
+            content_length: Some(size),
             body: Some(body),
+            tagging: self.tags.map(|tags| {
+                tags.into_iter()
+                    .fold(vec![], |mut acc, (k, v)| {
+                        acc.push(format!("{}={}", urlencode(&k), urlencode(&v)));
+                        acc
+                    })
+                    .join(",")
+            }),
             ..PutObjectRequest::default()
         })
     }

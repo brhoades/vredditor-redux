@@ -25,7 +25,10 @@ use tokio_tungstenite::tungstenite::protocol::Message;
 use internal::*;
 
 pub async fn run_server(addr: String) -> Result<()> {
-    let _ = env_logger::try_init();
+    if let Err(e) = pretty_env_logger::try_init() {
+        eprintln!("failed to initialize env_logger: {}", e);
+    }
+
     let q = JobQueue::new();
     let enqueuer = q.enqueuer();
     let authz = token::EnvAuthorizer::new_from_env("VR_AUTHORIZED_KEYS")?;
@@ -114,6 +117,8 @@ async fn accept_connection<A: token::Authorizer>(
             Err(e) => panic!(e), // infallible
             Ok(o) => o,
         })
+        // XXX: handle `Ping` from tungstenite.
+        //   error on connection: unsupported transcode request type from client: Ping([80, 73, 78, 71])
         .map(|v| match TranscodeReq::try_from(v) {
             Ok(v) => match &v.req {
                 None => Err(format_err!("missing transcode request message: {:?}", v)),
@@ -168,40 +173,42 @@ where
         + std::marker::Unpin,
 {
     match msg {
-        TranscodeReqMessage::Handshake(Handshake { ref token }) => match (token.as_ref().and_then(|t| t.token.as_ref()), &state) {
-            (Some(inner_token), StreamState::New) => {
-                return if !authz.is_authorized(&inner_token) {
-                    debug!("{} -> invalid handshake token: {:?}", addr, token);
+        TranscodeReqMessage::Handshake(Handshake { ref token }) => {
+            match (token.as_ref().and_then(|t| t.token.as_ref()), &state) {
+                (Some(inner_token), StreamState::New) => {
+                    return if !authz.is_authorized(&inner_token) {
+                        debug!("{} -> invalid handshake token: {:?}", addr, token);
+                        tx.send(TranscodeRespMessage::handshake_rejected(
+                            "token is not authorized",
+                        ))
+                        .await?;
+                        Ok(StreamState::New)
+                    } else {
+                        debug!("{} -> handshake accepted", addr);
+                        tx.send(TranscodeRespMessage::handshake_accepted("READY"))
+                            .await?;
+                        Ok(StreamState::Handshake)
+                    }
+                }
+                (None, StreamState::New) => {
+                    debug!(
+                        "{} -> token is required but not provided: {:?}",
+                        addr, token
+                    );
                     tx.send(TranscodeRespMessage::handshake_rejected(
-                        "token is not authorized",
+                        "token is required but not provided",
                     ))
                     .await?;
-                    Ok(StreamState::New)
-                } else {
-                    debug!("{} -> handshake accepted", addr);
-                    tx.send(TranscodeRespMessage::handshake_accepted("READY"))
-                        .await?;
-                    Ok(StreamState::Handshake)
+                }
+                (_, other) => {
+                    debug!("{} -> unexpected handshake from state {:?}", addr, other);
+                    tx.send(TranscodeRespMessage::handshake_rejected(
+                        "cannot handshake at this time",
+                    ))
+                    .await?;
                 }
             }
-            (None, StreamState::New) => {
-                debug!(
-                    "{} -> token is required but not provided: {:?}",
-                    addr, token
-                );
-                tx.send(TranscodeRespMessage::handshake_rejected(
-                    "token is required but not provided",
-                ))
-                .await?;
-            }
-            (_, other) => {
-                debug!("{} -> unexpected handshake from state {:?}", addr, other);
-                tx.send(TranscodeRespMessage::handshake_rejected(
-                    "cannot handshake at this time",
-                ))
-                .await?;
-            }
-        },
+        }
         TranscodeReqMessage::Transcode(TranscodeOpts { url }) => match &state {
             StreamState::Handshake => {
                 let url = match Url::parse(&url) {
