@@ -9,3 +9,6 @@ ts/build
 
 .eslintcache
 yarn-error.log
+*gitignored*
+.envrc
+default.nix

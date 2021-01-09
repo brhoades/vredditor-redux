@@ -1,7 +1,10 @@
+use std::time::Duration;
+
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures::{Stream, StreamExt};
 use rusoto_s3::{PutObjectRequest, S3};
+use tokio::time::sleep;
 use tokio_compat_02::FutureExt;
 
 use crate::internal::*;
@@ -160,17 +163,18 @@ where
     }
 
     // alternatively, to upload directly.
-    pub async fn upload<C: S3Put>(self, c: &C) -> Result<()> {
+    pub async fn upload<R: S3Put>(self, req: &R) -> Result<()> {
         if let Some(_) = option_env!("FAKE_S3") {
-            warn!("FAKE_S3 set. Faking an upload to S3.");
-            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+            warn!("FAKE_S3 set. Faking an upload to S3 (3 seconds).");
+            sleep(Duration::from_secs(3)).await;
             debug!("fake upload complete");
             return Ok(());
         }
 
-        Ok(c.upload_object(self.build()?)
+        req.upload_object(self.build().context("when building a S3Client")?)
             .compat() // XXX: remove with rusoto on tokio 0.3+
-            .await?)
+            .await
+            .context("when uploading using an S3Client")
     }
 }
 
