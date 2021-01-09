@@ -10,7 +10,6 @@ use tokio::{
     process::Command,
     try_join,
 };
-use tokio_compat_02::FutureExt;
 
 use crate::{file::GuardedTempFile, internal::*};
 
@@ -235,7 +234,6 @@ impl Clients {
             .http_client
             .get(url.clone())
             .send()
-            .compat() // XXX: remove with reqwest on tokio 0.3+
             .await
             .and_then(|resp| resp.error_for_status())
             .with_context(ctx)?;

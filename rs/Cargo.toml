@@ -14,7 +14,7 @@ env_logger = "0.8"
 anyhow = "1.0"
 base64 = "0.13"
 
-reqwest = { version = "0.10", features = ["stream"] }
+reqwest = { version = "0.11", features = ["stream"] }
 bytes = "1"
 rusoto_core = "0.46.0"
 rusoto_s3 = "0.46.0"
@@ -26,7 +26,6 @@ tokio = { version = "1", default-features = false, features = ["rt-multi-thread"
 tokio-stream = "0.1"
 # https://docs.rs/tokio-compat-02/0.1.2/tokio_compat_02/
 # reqwest is on tokio 0.2
-tokio-compat-02 = "0.1"
 tokio-util = { version = "0.6", features = ["full"] }
 tokio-tungstenite = "0.13.0"
 

@@ -1,3 +1,4 @@
+use std::fmt::Debug;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -5,7 +6,6 @@ use bytes::Bytes;
 use futures::{Stream, StreamExt};
 use rusoto_s3::{PutObjectRequest, S3};
 use tokio::time::sleep;
-use tokio_compat_02::FutureExt;
 
 use crate::internal::*;
 
@@ -139,11 +139,9 @@ where
         let body = rusoto_core::ByteStream::new(
             // compat must be external to any map, since a .map on a stream will expect the
             // newer tokio runtime and panic
-            tokio_compat_02::IoCompat::new(
-                self.data
-                    .ok_or_else(|| format_err!("data is required but missing"))?,
-            )
-            .map(|b| b.map(Into::into)),
+            self.data
+                .ok_or_else(|| format_err!("data is required but missing"))?
+                .map(|b| b.map(Into::into)),
         );
         Ok(PutObjectRequest {
             key: self
@@ -163,16 +161,17 @@ where
     }
 
     // alternatively, to upload directly.
-    pub async fn upload<R: S3Put>(self, req: &R) -> Result<()> {
+    pub async fn upload<C: S3Put>(self, client: &C) -> Result<()> {
         if let Some(_) = option_env!("FAKE_S3") {
             warn!("FAKE_S3 set. Faking an upload to S3 (3 seconds).");
             sleep(Duration::from_secs(3)).await;
             debug!("fake upload complete");
             return Ok(());
         }
-
-        req.upload_object(self.build().context("when building a S3Client")?)
-            .compat() // XXX: remove with rusoto on tokio 0.3+
+        let req = self.build().context("when building a S3PutObjectRequest")?;
+        trace!("upload request: {:#?}", req);
+        client
+            .upload_object(req)
             .await
             .context("when uploading using an S3Client")
     }
@@ -189,6 +188,6 @@ where
     T: S3 + Send + Sync,
 {
     async fn upload_object(&self, obj: PutObjectRequest) -> Result<()> {
-        self.put_object(obj).compat().await.ah().map(|_| ()) // XXX: remove with rusoto on tokio 0.3+
+        self.put_object(obj).await.ah().map(|_| ()) // XXX: remove with rusoto on tokio 0.3+
     }
 }
