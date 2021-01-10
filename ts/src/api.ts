@@ -65,9 +65,11 @@ const getVRedditFromUser = (url: string, statusCb: (status: string) => void): Pr
 
 let connection: VRWebSocket | null = null;
 
+// returns the existing connection if it's alive and valid, otherwise
+// connects
 const openConnection = (addr: string) => (
   new Promise<VRWebSocket>((resolve, reject) => {
-    if (connection !== null) {
+    if (connection !== null && connection.isOpened) {
       resolve(connection);
     }
     connection = new VRWebSocket(addr);
@@ -113,8 +115,11 @@ export const getHostedURL = (
       return openConnection(server).then(resolve, reject);
     }
   })
-  // handshake
+  // handshake, don't if already authed
 ).then((connection) => {
+  if (connection.authed) {
+    return connection;
+  }
   opts.statusCallback("Checking permission");
   return connection
     .sendRequest(NewRequest.handshake(opts.authz))
@@ -123,6 +128,7 @@ export const getHostedURL = (
         const accept = resp?.accepted;
         if (accept?.resultInner?.$case === "ok") {
           opts.statusCallback("Requesting");
+          connection.authed = true;
           return connection;
         } else if (accept?.resultInner?.$case === "err") {
           opts.statusCallback("Server declined");
@@ -379,6 +385,7 @@ class VRWebSocket {
 
     this.onClose = this.inner.onClose;
     this.onClose.addListener((v) => {
+      this.authed = false;
       console.error(`websocket closed`);
       console.dir(v);
     });
@@ -395,6 +402,7 @@ class VRWebSocket {
   public onError: Channel;
   public onResponse: Channel;
   public onMessage: Channel;
+  private isAuthed: boolean = false;
 
   public get isOpened(): boolean {
     return this.inner.isOpened;
@@ -404,12 +412,21 @@ class VRWebSocket {
     return this.inner.isOpening;
   }
 
+  public get authed(): boolean {
+    return this.isAuthed;
+  }
+
+  public set authed(value) {
+    this.isAuthed = value;
+  }
+
   public open(): Promise<Event> {
     return this.inner.open()
   }
 
   public close(_code?: string, _reason?: string): Promise<Event> {
     console.log("closing connection");
+    this.authed = false;
     return this.inner.close()
   }
 

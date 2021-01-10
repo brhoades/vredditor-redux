@@ -3,6 +3,7 @@ use std::fmt::{Display, Formatter, Result as FmtResult};
 
 pub use prost::{Message as ProstMessage, Oneof as OneOf};
 use tokio_tungstenite::tungstenite::protocol::Message;
+use tungstenite::protocol::frame::CloseFrame;
 
 use crate::internal::*;
 
@@ -19,6 +20,7 @@ pub use proto_inner::{
     },
     Result as RawProtoResultWrapper, TranscodeReq, TranscodeResp,
 };
+pub use tungstenite::protocol::frame::coding::CloseCode;
 
 /**********************
  * Results
@@ -220,54 +222,6 @@ impl TranscodeResp {
     }
 }
 
-impl TranscodeRespMessage {
-    pub fn handshake_accepted<T: Into<String>>(msg: T) -> TranscodeRespMessage {
-        Self::Accepted(Ok(msg.into()).into())
-    }
-
-    pub fn handshake_rejected<T: Display>(msg: T) -> TranscodeRespMessage {
-        Self::Accepted(
-            Into::<RawProtoResultWrapper>::into(Err::<String, _>(format_err!("{}", msg))).into(),
-        )
-    }
-
-    pub fn queued() -> Self {
-        Self::JobStatus(JobStatus {
-            state: Some(JobState::Queued(())),
-        })
-    }
-
-    pub fn processing() -> Self {
-        Self::JobStatus(JobStatus {
-            state: Some(JobState::Processing(())),
-        })
-    }
-
-    pub fn uploading() -> Self {
-        Self::JobStatus(JobStatus {
-            state: Some(JobState::Uploading(())),
-        })
-    }
-
-    pub fn cancelled() -> Self {
-        Self::JobStatus(JobStatus {
-            state: Some(JobState::Cancelled(())),
-        })
-    }
-
-    pub fn no_jobs() -> Self {
-        Self::JobStatus(JobStatus {
-            state: Some(JobState::NoJobs(())),
-        })
-    }
-
-    pub fn unknown() -> Self {
-        Self::JobStatus(JobStatus {
-            state: Some(JobState::Unknown(())),
-        })
-    }
-}
-
 /************************
  * TranscodeReq
  *************************/
@@ -278,42 +232,6 @@ impl TranscodeReq {
             req: Some(TranscodeReqMessage::Transcode(TranscodeOpts {
                 url: msg.into(),
             })),
-        }
-    }
-}
-
-/************************
- * Websocket integrations
- *************************/
-
-impl TryFrom<Message> for TranscodeReq {
-    type Error = anyhow::Error;
-
-    fn try_from(msg: Message) -> Result<Self> {
-        use Message::*;
-
-        match msg {
-            Binary(bytes) => Ok(Self::decode(bytes.as_slice())?),
-            other => Err(format_err!(
-                "unsupported transcode request type from client: {:?}",
-                other
-            )),
-        }
-    }
-}
-
-impl TryFrom<Message> for TranscodeResp {
-    type Error = anyhow::Error;
-
-    fn try_from(msg: Message) -> Result<Self> {
-        use Message::*;
-
-        match msg {
-            Binary(bytes) => Ok(Self::decode(bytes.as_slice())?),
-            other => Err(format_err!(
-                "unsupported transcode request type from client: {:?}",
-                other
-            )),
         }
     }
 }
@@ -386,14 +304,182 @@ impl Into<Message> for TranscodeRespMessage {
  * Handshake
  ***********************************/
 impl Handshake {
-    pub fn from_raw(raw: Vec<u8>) -> Self {
+    pub fn from_raw(_raw: Vec<u8>) -> Self {
         Self {
-            // token: Some(::V1(raw)),
+            // token: Some(Token::V1(raw)),
             token: None,
         }
     }
 
     pub fn token(&self) -> Option<&Token> {
         unimplemented!()
+    }
+}
+
+/************************************
+ * All client messages combined
+ ***********************************/
+pub enum ClientMessage {
+    Transcode(TranscodeReqMessage),
+    Ping(Vec<u8>),
+    Close,
+    CloseReason {
+        code: CloseCode,
+        reason: std::borrow::Cow<'static, str>,
+    },
+    Unsupported(Error),
+}
+
+/************************************
+ * All server messages combined
+ ***********************************/
+pub enum ServerMessage {
+    Transcode(TranscodeRespMessage),
+    Pong(Vec<u8>),
+    Close,
+    CloseReason {
+        code: CloseCode,
+        reason: std::borrow::Cow<'static, str>,
+    },
+}
+
+impl ServerMessage {
+    pub fn handshake_accepted<T: Into<String>>(msg: T) -> Self {
+        Self::Transcode(TranscodeRespMessage::Accepted(Ok(msg.into()).into()))
+    }
+
+    pub fn handshake_rejected<T: Display>(msg: T) -> Self {
+        Self::Transcode(TranscodeRespMessage::Accepted(
+            Into::<RawProtoResultWrapper>::into(Err::<String, _>(format_err!("{}", msg))).into(),
+        ))
+    }
+
+    pub fn queued() -> Self {
+        Self::Transcode(TranscodeRespMessage::JobStatus(JobStatus {
+            state: Some(JobState::Queued(())),
+        }))
+    }
+
+    pub fn processing() -> Self {
+        Self::Transcode(TranscodeRespMessage::JobStatus(JobStatus {
+            state: Some(JobState::Processing(())),
+        }))
+    }
+
+    pub fn uploading() -> Self {
+        Self::Transcode(TranscodeRespMessage::JobStatus(JobStatus {
+            state: Some(JobState::Uploading(())),
+        }))
+    }
+
+    pub fn cancelled() -> Self {
+        Self::Transcode(TranscodeRespMessage::JobStatus(JobStatus {
+            state: Some(JobState::Cancelled(())),
+        }))
+    }
+
+    pub fn no_jobs() -> Self {
+        Self::Transcode(TranscodeRespMessage::JobStatus(JobStatus {
+            state: Some(JobState::NoJobs(())),
+        }))
+    }
+
+    pub fn job_status(status: JobState) -> Self {
+        Self::Transcode(TranscodeRespMessage::JobStatus(JobStatus {
+            state: Some(status),
+        }))
+    }
+
+    pub fn unknown() -> Self {
+        Self::Transcode(TranscodeRespMessage::JobStatus(JobStatus {
+            state: Some(JobState::Unknown(())),
+        }))
+    }
+
+    pub fn error<M: Into<String>>(error: M) -> Self {
+        Self::Transcode(TranscodeRespMessage::Error(error.into()))
+    }
+
+    pub fn pong(msg: Vec<u8>) -> Self {
+        Self::Pong(msg)
+    }
+
+    /// close closes with no message
+    pub fn close() -> Self {
+        Self::Close
+    }
+
+    pub fn close_with_reason(code: CloseCode, reason: String) -> Self {
+        Self::CloseReason {
+            code,
+            reason: reason.into(),
+        }
+    }
+}
+
+/************************
+ * Websocket integrations
+ *************************/
+
+impl TryFrom<Message> for ClientMessage {
+    type Error = anyhow::Error;
+
+    fn try_from(msg: Message) -> Result<Self> {
+        use Message::*;
+
+        match msg {
+            Binary(bytes) => TranscodeReq::decode(bytes.as_slice())
+                .ah()
+                .and_then(|req| {
+                    req.req
+                        .ok_or_else(|| format_err!("transcode req has no message"))
+                })
+                .map(Self::Transcode),
+            Ping(payload) => Ok(Self::Ping(payload)),
+            Close(None) => Ok(Self::Close),
+            Close(Some(CloseFrame { code, reason })) => Ok(Self::CloseReason { code, reason }),
+            other => Err(format_err!(
+                "unsupported transcode request type from client: {:?}",
+                other
+            )),
+        }
+    }
+}
+
+impl TryFrom<Message> for ServerMessage {
+    type Error = anyhow::Error;
+
+    fn try_from(msg: Message) -> Result<Self> {
+        use Message::*;
+
+        match msg {
+            Binary(bytes) => TranscodeResp::decode(bytes.as_slice())
+                .ah()
+                .and_then(|resp| {
+                    resp.resp
+                        .ok_or_else(|| format_err!("transcode resp has no message"))
+                })
+                .map(Self::Transcode),
+            Pong(payload) => Ok(Self::Pong(payload)),
+            Close(None) => Ok(Self::Close),
+            Close(Some(CloseFrame { code, reason })) => Ok(Self::CloseReason { code, reason }),
+            other => Err(format_err!(
+                "unsupported transcode request type from client: {:?}",
+                other
+            )),
+        }
+    }
+}
+
+impl Into<Message> for ServerMessage {
+    fn into(self) -> Message {
+        match self {
+            ServerMessage::Pong(payload) => Message::Pong(payload),
+            ServerMessage::CloseReason { code, reason } => {
+                Message::Close(Some(CloseFrame { code, reason }))
+            }
+            ServerMessage::Close => Message::Close(None),
+            ServerMessage::Transcode(msg) => msg.into(),
+        }
     }
 }

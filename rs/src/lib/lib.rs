@@ -1,4 +1,5 @@
 #![feature(async_closure)]
+#![feature(or_patterns)]
 
 mod file;
 pub(crate) mod internal;
@@ -90,10 +91,33 @@ impl Job {
 #[derive(Debug, Clone)]
 enum StreamState {
     New,
-    Handshake,
-    Queued(Job),
-    #[allow(dead_code)]
-    Done(Job),
+    Waiting,
+    Running(Job),
+    Closed,
+}
+
+impl StreamState {
+    // Returns a job's state if one is running, else NoJobs.
+    async fn job_state(&self) -> Option<JobState> {
+        match &self {
+            StreamState::Running(j) => match j.state.lock().await.clone() {
+                JobState::NoJobs(_) => None,
+                JobState::Unknown(_) => None,
+                other => Some(other),
+            },
+            _ => None,
+        }
+    }
+
+    /// errors if the state isn't auth'd.
+    /// XXX: deprecated: when streamstate can be updated by a subscriber,
+    /// this can be replated by a "Completed" state for jobs.
+    async fn bail_if_unauthed(&self) -> Result<(), Error> {
+        match &self {
+            StreamState::New => Err(format_err!("unauthenticated: cannot use function")),
+            _ => Ok(()),
+        }
+    }
 }
 
 async fn accept_connection<A: token::Authorizer>(
@@ -119,16 +143,11 @@ async fn accept_connection<A: token::Authorizer>(
         })
         // XXX: handle `Ping` from tungstenite.
         //   error on connection: unsupported transcode request type from client: Ping([80, 73, 78, 71])
-        .map(|v| match TranscodeReq::try_from(v) {
-            Ok(v) => match &v.req {
-                None => Err(format_err!("missing transcode request message: {:?}", v)),
-                Some(_) => Ok(v.req.unwrap()),
-            },
-            Err(v) => Err(v),
-        });
+        .map(|v| ClientMessage::try_from(v));
     let mut tx = tx.with(|resp| futures::future::ok::<_, Error>(Into::<Message>::into(resp)));
 
     while let Some(msg) = rx.next().await {
+        // XXX: hack, until we subscribe, if we're queued update the job state before processing.
         stream_state = match msg {
             Ok(msg) => {
                 match handle_message(stream_state, &mut tx, authz.clone(), &mut eq, &addr, msg)
@@ -147,11 +166,8 @@ async fn accept_connection<A: token::Authorizer>(
             }
             Err(e) => {
                 warn!("{} -> error on connection: {}", addr, e);
-                tx.send(TranscodeRespMessage::Error(format!(
-                    "protocol error: {}",
-                    e
-                )))
-                .await?;
+                tx.send(ServerMessage::error(format!("protocol error: {}", e)))
+                    .await?;
                 continue;
             }
         };
@@ -165,99 +181,175 @@ async fn handle_message<'a, T, A: token::Authorizer>(
     authz: A,
     eq: &mut JobEnqueuer,
     addr: &SocketAddr,
-    msg: TranscodeReqMessage,
+    msg: ClientMessage,
 ) -> Result<StreamState>
 where
-    T: futures::Sink<TranscodeRespMessage, Error = Error>
-        + futures::SinkExt<TranscodeRespMessage>
+    T: futures::Sink<ServerMessage, Error = Error>
+        + futures::SinkExt<ServerMessage>
         + std::marker::Unpin,
 {
-    match msg {
-        TranscodeReqMessage::Handshake(Handshake { ref token }) => {
-            match (token.as_ref().and_then(|t| t.token.as_ref()), &state) {
-                (Some(inner_token), StreamState::New) => {
+    use ClientMessage::*;
+
+    match (state.job_state().await, msg) {
+        (None, Transcode(TranscodeReqMessage::Handshake(Handshake { ref token }))) => {
+            match token.as_ref().and_then(|t| t.token.as_ref()) {
+                Some(inner_token) => {
                     return if !authz.is_authorized(&inner_token) {
                         debug!("{} -> invalid handshake token: {:?}", addr, token);
-                        tx.send(TranscodeRespMessage::handshake_rejected(
-                            "token is not authorized",
-                        ))
-                        .await?;
+                        tx.send(ServerMessage::handshake_rejected("token is not authorized"))
+                            .await?;
                         Ok(StreamState::New)
                     } else {
                         debug!("{} -> handshake accepted", addr);
-                        tx.send(TranscodeRespMessage::handshake_accepted("READY"))
-                            .await?;
-                        Ok(StreamState::Handshake)
+                        tx.send(ServerMessage::handshake_accepted("READY")).await?;
+                        Ok(StreamState::Waiting)
                     }
                 }
-                (None, StreamState::New) => {
+                None => {
                     debug!(
                         "{} -> token is required but not provided: {:?}",
                         addr, token
                     );
-                    tx.send(TranscodeRespMessage::handshake_rejected(
+                    tx.send(ServerMessage::handshake_rejected(
                         "token is required but not provided",
                     ))
                     .await?;
                 }
-                (_, other) => {
-                    debug!("{} -> unexpected handshake from state {:?}", addr, other);
-                    tx.send(TranscodeRespMessage::handshake_rejected(
-                        "cannot handshake at this time",
+            }
+        }
+        (Some(state), Transcode(TranscodeReqMessage::Handshake(_))) => {
+            debug!(
+                "{} -> unexpected handshake from non-new state: {:?}",
+                addr, state,
+            );
+            tx.send(ServerMessage::handshake_rejected(
+                "cannot handshake at this time",
+            ))
+            .await?;
+        }
+        (
+            Some(JobState::Completed(_)),
+            Transcode(TranscodeReqMessage::Transcode(TranscodeOpts { url })),
+        )
+        | (None, Transcode(TranscodeReqMessage::Transcode(TranscodeOpts { url }))) => {
+            state.bail_if_unauthed().await?;
+            match &state {
+                StreamState::New => unreachable!("checked above"),
+                StreamState::Running(j) => {
+                    error!("hit unexpected running + none state");
+                    match *j.state.lock().await {
+                        JobState::Unknown(_) | JobState::NoJobs(_) | JobState::Completed(_) => (),
+                        _ => {
+                            tx.send(ServerMessage::error(
+                                "there is a job queued. wait for it to finish or cancel it before starting another",
+                            ))
+                                .await?;
+                        }
+                    }
+                }
+                StreamState::Closed => {
+                    warn!("{} -> enqueue after stream closed", addr);
+                    tx.send(ServerMessage::close_with_reason(
+                        CloseCode::Error,
+                        "connection already closed".to_string(),
                     ))
                     .await?;
                 }
+                StreamState::Waiting => (),
             }
-        }
-        TranscodeReqMessage::Transcode(TranscodeOpts { url }) => match &state {
-            StreamState::Handshake => {
-                let url = match Url::parse(&url) {
-                    Ok(url) => url,
-                    Err(e) => {
-                        tx.send(TranscodeRespMessage::Error(format!("error: {}", e)))
-                            .await?;
-                        return Ok(state);
-                    }
-                };
-                debug!("{} -> enqueuing URL {}", addr, url);
 
-                let job = eq.enqueue_url(url).await?;
-                debug!("{} -> job created, url enqueued: {:?}", addr, job);
-
-                tx.send(TranscodeRespMessage::queued()).await?;
-                return Ok(StreamState::Queued(job));
-            }
-            other => {
-                debug!(
-                    "{} -> tried to provide url at state {:?}: {:?}",
-                    addr, state, other,
-                );
-                tx.send(TranscodeRespMessage::Error(
-                    "cannot process another url at this time".into(),
-                ))
-                .await?;
-            }
-        },
-        TranscodeReqMessage::Status(_) => {
-            let state = match &state {
-                StreamState::New => JobState::Unknown(()),
-                StreamState::Handshake => JobState::NoJobs(()),
-                StreamState::Queued(job) | StreamState::Done(job) => job.state.lock().await.clone(),
+            let url = match Url::parse(&url) {
+                Ok(url) => url,
+                Err(e) => {
+                    tx.send(ServerMessage::error(format!("error: {}", e)))
+                        .await?;
+                    return Ok(state);
+                }
             };
-            trace!("{} -> job status {}", addr, state);
+            debug!("{} -> enqueuing URL {}", addr, url);
 
-            tx.send(TranscodeRespMessage::JobStatus(JobStatus {
-                state: Some(state),
-            }))
+            let job = eq.enqueue_url(url).await?;
+            debug!("{} -> job created, url enqueued: {:?}", addr, job);
+
+            tx.send(ServerMessage::queued()).await?;
+            return Ok(StreamState::Running(job));
+        }
+        (Some(job_state), Transcode(TranscodeReqMessage::Transcode(_))) => {
+            state.bail_if_unauthed().await?;
+            debug!(
+                "{} -> attempted to enqueue from invalid state ({:?})",
+                addr, job_state,
+            );
+            tx.send(ServerMessage::error(
+                "there is a job queued. wait for it to finish or cancel it before starting another",
+            ))
             .await?;
         }
-        v => {
-            debug!("{} -> Invalid message \"{:?}\"", addr, v);
-            tx.send(TranscodeRespMessage::Error(format!(
-                "unknown proto message type: {:?}",
-                v
-            )))
-            .await?;
+        (Some(job_state), Transcode(TranscodeReqMessage::Status(_))) => {
+            state.bail_if_unauthed().await?;
+            debug!("{} -> job status", addr);
+            debug!("{} <- {}", addr, &job_state);
+            tx.send(ServerMessage::job_status(job_state)).await?;
+        }
+        (None, Transcode(TranscodeReqMessage::Status(_))) => {
+            state.bail_if_unauthed().await?;
+            // special derived statuses
+            debug!("{} -> job status without job", addr);
+            match &state {
+                StreamState::New => {
+                    tx.send(ServerMessage::close_with_reason(
+                        CloseCode::Protocol,
+                        "must successfully handshake prior to job status commands".to_string(),
+                    ))
+                    .await?;
+                    return Ok(StreamState::Closed);
+                }
+                StreamState::Waiting => {
+                    tx.send(ServerMessage::job_status(JobState::NoJobs(())))
+                        .await?
+                }
+                StreamState::Running(_) => unreachable!("handled by above case"),
+                StreamState::Closed => (),
+            };
+        }
+        (Some(JobState::Completed(_)) | None, Transcode(TranscodeReqMessage::Cancel(_))) => {
+            state.bail_if_unauthed().await?;
+            debug!("{} -> cancel job", addr);
+            tx.send(ServerMessage::error("cancel is not possible at this time"))
+                .await?;
+            debug!("{} <- cannot cancel from state", addr);
+        }
+        (Some(_), Transcode(TranscodeReqMessage::Cancel(_))) => {
+            state.bail_if_unauthed().await?;
+            debug!("{} -> cancel job", addr);
+
+            // signal to the running job that it's done, then return a new state
+            // XXX: this likely does nothing
+            if let StreamState::Running(mut job) = state {
+                job.set_state_if_eq(JobState::Cancelled(()), None).await;
+            } else {
+                unreachable!("shoudn't happen: {:?}", state);
+            }
+
+            tx.send(ServerMessage::job_status(JobState::Cancelled(())))
+                .await?;
+            return Ok(StreamState::Waiting);
+        }
+        (_, Ping(payload)) => {
+            debug!("{} -> ping", addr);
+            tx.send(ServerMessage::pong(payload)).await?;
+            debug!("{} <- pong", addr);
+        }
+        (_, CloseReason { reason, code }) => {
+            debug!("{} -> closed with code {}: {}", addr, code, reason);
+            return Ok(StreamState::Closed);
+        }
+        (_, Close) => {
+            debug!("{} -> close without reason", addr);
+            return Ok(StreamState::Closed);
+        }
+        (_, Unsupported(msg)) => {
+            error!("{} -> unsupported message\n{:?}", addr, msg);
         }
     }
 
