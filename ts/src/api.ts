@@ -81,7 +81,7 @@ const openConnection = (addr: string) => (
         console.dir(connection);
         connection.close();
         connection = null;
-        reject("connection timeout");
+        reject("timed out when attempting to connect");
       }
     }, 5000);
 
