@@ -18,9 +18,9 @@ export const withCookiePersistence = <FormValues>(persistedValues: (keyof FormVa
       return;
     }
 
-    new Cookie('persist', { maxAge: 100 * 365 * 24 * 60 * 60 }).set('persist', JSON.stringify(
+    new Cookie('persist').set('persist', JSON.stringify(
       persistedValues.reduce((acc, k) => ({ ...acc, [k]: values[k] }), {})
-    ));
+    ), { maxAge: 100 * 365 * 24 * 60 * 60 });
   },
   { values: true },
 );
