@@ -1,3 +1,4 @@
-./target
-./docker-build.sh
-./gitignored-docker-run.sh
+target
+docker-build.sh
+gitignored-docker-run.sh
+*gitignored*

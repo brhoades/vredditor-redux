@@ -10,6 +10,7 @@ use tokio::{
     process::Command,
     try_join,
 };
+use url::Url;
 
 use crate::{file::GuardedTempFile, internal::*};
 
@@ -153,7 +154,7 @@ pub(crate) async fn youtube_dl_download<'b, S: AsRef<str>, B: AsRef<str>>(
     args: Option<&'b [B]>,
 ) -> Result<GuardedTempFile> {
     let url = url.as_ref();
-    let ctx = || format!("for downloading url {}", url);
+    let ctx = |extra: &str| format!("{} from url {}", extra, url);
 
     // get info to retrieve target formats
     let info = youtube_dl_info(url, args).await?;
@@ -174,7 +175,17 @@ pub(crate) async fn youtube_dl_download<'b, S: AsRef<str>, B: AsRef<str>>(
     };
 
     // HACK: replace .m3u8 with .ts to work around HLS. We should read the file to determine that, but this'll work great.
-    let video_format_url = video_format.as_ref().map(|v| v.url.replace(".m3u8", ".ts"));
+    // It doesn't. when there's versioning involved?
+    let video_format_url = match video_format {
+        Some(ref fmt) => {
+            let url = resolve_video(clients, &fmt.url)
+                .await
+                .with_context(|| ctx(""));
+            debug!("resolved video for {}: {:?}", fmt.url, url);
+            Some(url?)
+        }
+        None => None,
+    };
     let audio_format_url = audio_format.as_ref().map(|u| u.url.clone());
 
     // get their URLs.
@@ -182,7 +193,7 @@ pub(crate) async fn youtube_dl_download<'b, S: AsRef<str>, B: AsRef<str>>(
         clients.maybe_download_to_tempfile(video_format_url.as_ref()),
         clients.maybe_download_to_tempfile(audio_format_url.as_ref())
     )
-    .with_context(ctx)?;
+    .with_context(|| ctx("errored"))?;
     if let Some(ref mut video) = video {
         debug!(
             "video: {} with {} bytes from {}",
@@ -190,8 +201,7 @@ pub(crate) async fn youtube_dl_download<'b, S: AsRef<str>, B: AsRef<str>>(
             video
                 .len()
                 .await
-                .with_context(ctx)
-                .context("downloaded video")?,
+                .with_context(|| ctx("an error occurred when getting video file length"))?,
             video_format_url.unwrap(),
         );
     }
@@ -203,13 +213,14 @@ pub(crate) async fn youtube_dl_download<'b, S: AsRef<str>, B: AsRef<str>>(
             audio
                 .len()
                 .await
-                .with_context(ctx)
-                .context("downloaded audio")?,
+                .with_context(|| ctx("an error occurred when getting audio file length"))?,
             audio_format_url.unwrap(),
         );
     }
 
-    merge_audio_video(video, audio).await.with_context(ctx)
+    merge_audio_video(video, audio)
+        .await
+        .with_context(|| ctx("errored while merging video and audio files"))
 }
 
 impl Clients {
@@ -323,4 +334,77 @@ async fn merge_audio_video(
     // child.kill().await?;
 
     Ok(mergefile)
+}
+
+// resolve_video returns a video's url, recursively resolving any playlist files as needed.
+async fn resolve_video<S: AsRef<str>>(clients: &Clients, url: S) -> Result<String> {
+    let urlstr = url.as_ref();
+    let url = Url::parse(urlstr).context("errored while parsing video url for resolution")?;
+
+    if let Some(ref file) = url
+        .clone()
+        .path_segments()
+        .and_then(|segs| segs.last())
+        .and_then(|file| file.split('.').last())
+    {
+        match file {
+            &"m3u8" => {
+                // m3u8 include file pieces. Read it, inspect the contents, verify it's all one file,
+                // and error otherwise.
+                let resp = clients
+                    .http_client
+                    .get(urlstr)
+                    .send()
+                    .await
+                    .context("an error occurred when retrieving m3u8 details")?;
+                let len = resp.content_length();
+                if len.is_none()
+                    || (resp.content_length().is_some()
+                        && resp.content_length().unwrap() > 1024 * 1024)
+                {
+                    return Err(format_err!(
+                        "target m3u8 url {} exceeds size constraint of {}: {}",
+                        urlstr,
+                        1024 * 1024,
+                        len.map(|s| s.to_string())
+                            .unwrap_or_else(|| "no length".to_string())
+                    ));
+                }
+
+                // collapse all non-comment lines into a single file if they match.
+                let file = resp
+                    .text()
+                    .await
+                    .context("when parsing m3u8 file contents")?;
+                let file = file
+                    .split('\n')
+                    .filter(|s| !s.starts_with('#') && s.trim() != "")
+                    .fold(None, |acc, e| match acc {
+                        None => Some(Ok(e)),
+                        Some(Ok(last)) if last == e => Some(Ok(last)),
+                        Some(Ok(last)) => Some(Err(format_err!(
+                            "{} file contained multiple separate files (at least \"{}\" and \"{}\"))",
+                            urlstr,
+                            e,
+                            last
+                        ))),
+                        Some(Err(e)) => Some(Err(e)),
+                    })
+                    .ok_or_else(|| format_err!("{} contained no m3u8 data"))??;
+                let mut url = url.clone();
+                let mut path = url.path_segments_mut().map_err(|_| {
+                    format_err!("failed to resolve url: {} cannot be a base", urlstr)
+                })?;
+                path.pop();
+                path.push(file);
+                std::mem::drop(path);
+
+                debug!("when resolving a m3u8: resolved {} to {}", urlstr, &url);
+                Ok(url.to_string())
+            }
+            _ => Ok(urlstr.to_string()),
+        }
+    } else {
+        Ok(urlstr.to_string())
+    }
 }
